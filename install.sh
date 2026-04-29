@@ -88,6 +88,8 @@ validate_args() {
     err "Unsupported mode: $MODE"
     exit 1
   fi
+
+  return 0
 }
 
 download_and_install_binary() {
