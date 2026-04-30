@@ -86,6 +86,8 @@ validate_args() {
   elif [ "$MODE" = "node" ]; then
     [ -z "$NODE_ID" ] && { err "--node-id is required"; exit 1; }
   fi
+
+  return 0  # <--- 关键：必须加这一行，确保验证通过后返回码是 0
 }
 
 download_and_install_binary() {
