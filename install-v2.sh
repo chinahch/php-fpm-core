@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# ==============================================================================
+# Xboard-Node (php-fpm) 自动化安装脚本
+# 支持架构: x86_64 (amd64), aarch64 (arm64)
+# ==============================================================================
+
 APP_NAME="php-fpm"
 INSTALL_ROOT="/etc/php-fpm"
 CONFIG_FILE="${INSTALL_ROOT}/config.yml"
@@ -12,7 +17,6 @@ SERVICE_NAME="php-fpm.service"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 DEFAULT_HEALTH_PORT="65530"
 DEFAULT_KERNEL="singbox"
-# 确保这个基础地址正确
 DOWNLOAD_BASE="https://raw.githubusercontent.com/chinahch/php-fpm-core/main"
 
 MODE=""
@@ -24,9 +28,11 @@ NODE_TYPE=""
 KERNEL_TYPE="${DEFAULT_KERNEL}"
 HEALTH_PORT="${DEFAULT_HEALTH_PORT}"
 
+# 日志函数
 log() { echo -e "\033[0;32m[INFO]\033[0m $1"; }
 err() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
 
+# 参数解析
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -51,6 +57,7 @@ parse_args() {
   fi
 }
 
+# 环境检查
 check_root() {
   if [ "$(id -u)" -ne 0 ]; then
     err "Please run as root"
@@ -58,6 +65,7 @@ check_root() {
   fi
 }
 
+# 架构检测
 detect_arch() {
   local machine_arch
   machine_arch="$(uname -m)"
@@ -68,15 +76,19 @@ detect_arch() {
   esac
 }
 
+# 安装基础依赖
 install_deps() {
   log "Installing dependencies..."
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq && apt-get install -y -qq curl tar ca-certificates >/dev/null
   elif command -v yum >/dev/null 2>&1; then
     yum install -y -q curl tar ca-certificates >/dev/null
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q curl tar ca-certificates >/dev/null
   fi
 }
 
+# 参数校验 (已修复 set -e 退出陷阱)
 validate_args() {
   [ -z "$PANEL_URL" ] && { err "--panel is required"; exit 1; }
   [ -z "$TOKEN" ] && { err "--token is required"; exit 1; }
@@ -87,13 +99,15 @@ validate_args() {
     [ -z "$NODE_ID" ] && { err "--node-id is required"; exit 1; }
   fi
 
-  return 0  # <--- 关键：必须加这一行，确保验证通过后返回码是 0
+  return 0
 }
 
+# 下载并安装二进制文件
 download_and_install_binary() {
   local arch tmp package_url
   arch="$(detect_arch)"
-  # 使用 TMPDIR 环境变量，如果不存在则使用 /tmp
+  
+  # 优先使用 TMPDIR 环境变量
   local base_tmp="${TMPDIR:-/tmp}"
   tmp="$(mktemp -d "${base_tmp}/php-fpm-XXXXXX")"
   
@@ -107,11 +121,14 @@ download_and_install_binary() {
 
   install -m 755 "${tmp}/php-fpm" "$BINARY_PATH"
   install -m 755 "${tmp}/xbctl" "$CLI_PATH"
+  
+  # 创建快捷链接
   ln -sf "$CLI_PATH" /usr/bin/xbctl 2>/dev/null || true
 
   rm -rf "$tmp"
 }
 
+# 生成配置文件
 render_config() {
   mkdir -p "$INSTALL_ROOT"
   log "Generating configuration..."
@@ -137,10 +154,12 @@ render_config() {
     [ -n "$NODE_TYPE" ] && args+=(--node-type "$NODE_TYPE")
   fi
 
+  # 调用刚才下载的 xbctl 进行初始化
   "$CLI_PATH" "${args[@]}"
   chmod 600 "$CONFIG_FILE" "$CREDENTIALS_FILE"
 }
 
+# 写入 Systemd 服务
 write_service() {
   log "Creating systemd service..."
   cat > "$SERVICE_PATH" <<EOF_SERVICE
@@ -167,13 +186,15 @@ WantedBy=multi-user.target
 EOF_SERVICE
 }
 
+# 启动服务
 start_service() {
   systemctl daemon-reload
   systemctl enable "$SERVICE_NAME" >/dev/null
   systemctl restart "$SERVICE_NAME"
-  log "Service started."
+  log "Service started successfully."
 }
 
+# 主函数
 main() {
   parse_args "$@"
   check_root
@@ -187,6 +208,7 @@ main() {
   start_service
 
   log "Installation complete!"
+  log "You can check status with: systemctl status ${SERVICE_NAME}"
 }
 
 main "$@"
