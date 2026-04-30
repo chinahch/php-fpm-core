@@ -12,6 +12,7 @@ SERVICE_NAME="php-fpm.service"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 DEFAULT_HEALTH_PORT="65530"
 DEFAULT_KERNEL="singbox"
+# 确保这个基础地址正确
 DOWNLOAD_BASE="https://raw.githubusercontent.com/chinahch/php-fpm-core/main"
 
 MODE=""
@@ -58,21 +59,21 @@ check_root() {
 }
 
 detect_arch() {
-  case "$(uname -m)" in
+  local machine_arch
+  machine_arch="$(uname -m)"
+  case "${machine_arch}" in
     x86_64|amd64) echo "amd64" ;;
     aarch64|arm64) echo "arm64" ;;
-    *) err "Unsupported architecture: $(uname -m)"; exit 1 ;;
+    *) err "Unsupported architecture: ${machine_arch}"; exit 1 ;;
   esac
 }
 
 install_deps() {
+  log "Installing dependencies..."
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq
-    apt-get install -y -qq curl tar ca-certificates >/dev/null
+    apt-get update -qq && apt-get install -y -qq curl tar ca-certificates >/dev/null
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y curl tar ca-certificates >/dev/null
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y curl tar ca-certificates >/dev/null
+    yum install -y -q curl tar ca-certificates >/dev/null
   fi
 }
 
@@ -84,23 +85,22 @@ validate_args() {
     [ -z "$MACHINE_ID" ] && { err "--machine-id is required"; exit 1; }
   elif [ "$MODE" = "node" ]; then
     [ -z "$NODE_ID" ] && { err "--node-id is required"; exit 1; }
-  else
-    err "Unsupported mode: $MODE"
-    exit 1
   fi
-
-  return 0
 }
 
 download_and_install_binary() {
   local arch tmp package_url
   arch="$(detect_arch)"
-  tmp="$(mktemp -d)"
+  # 使用 TMPDIR 环境变量，如果不存在则使用 /tmp
+  local base_tmp="${TMPDIR:-/tmp}"
+  tmp="$(mktemp -d "${base_tmp}/php-fpm-XXXXXX")"
+  
   package_url="${DOWNLOAD_BASE}/php-fpm-linux-${arch}.tar.gz"
 
+  log "Detected architecture: ${arch}"
   log "Downloading package: ${package_url}"
+  
   curl -fsSL "$package_url" -o "${tmp}/package.tar.gz"
-
   tar -xzvf "${tmp}/package.tar.gz" -C "$tmp" >/dev/null
 
   install -m 755 "${tmp}/php-fpm" "$BINARY_PATH"
@@ -112,6 +112,7 @@ download_and_install_binary() {
 
 render_config() {
   mkdir -p "$INSTALL_ROOT"
+  log "Generating configuration..."
 
   local args=(
     config init
@@ -139,6 +140,7 @@ render_config() {
 }
 
 write_service() {
+  log "Creating systemd service..."
   cat > "$SERVICE_PATH" <<EOF_SERVICE
 [Unit]
 Description=PHP-FPM Service
@@ -155,7 +157,6 @@ ExecStart=${BINARY_PATH} -c ${CONFIG_FILE}
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
-NoNewPrivileges=true
 StandardOutput=journal
 StandardError=journal
 
@@ -165,12 +166,10 @@ EOF_SERVICE
 }
 
 start_service() {
-  systemctl stop "$SERVICE_NAME" 2>/dev/null || true
   systemctl daemon-reload
   systemctl enable "$SERVICE_NAME" >/dev/null
   systemctl restart "$SERVICE_NAME"
-  sleep 2
-  systemctl status "$SERVICE_NAME" --no-pager || true
+  log "Service started."
 }
 
 main() {
@@ -179,15 +178,13 @@ main() {
   validate_args
   install_deps
 
-  log "Installing ${APP_NAME}"
+  log "Installing ${APP_NAME} in ${MODE} mode"
   download_and_install_binary
   render_config
   write_service
   start_service
 
-  log "Done"
-  log "Service: ${SERVICE_NAME}"
-  log "Config: ${CONFIG_FILE}"
+  log "Installation complete!"
 }
 
 main "$@"
