@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 # ==============================================================================
 # Xboard-Node (Stealth Mode: Caddy) 自动化安装脚本
+# 支持架构: x86_64 (amd64), aarch64 (arm64)
+# 版本后缀: v1
 # ==============================================================================
 
 APP_NAME="caddy"
@@ -87,7 +89,7 @@ install_deps() {
   fi
 }
 
-# 参数校验
+# 参数校验 (已修复 set -e 退出陷阱)
 validate_args() {
   [ -z "$PANEL_URL" ] && { err "--panel is required"; exit 1; }
   [ -z "$TOKEN" ] && { err "--token is required"; exit 1; }
@@ -106,11 +108,12 @@ download_and_install_binary() {
   local arch tmp package_url
   arch="$(detect_arch)"
   
+  # 优先使用 TMPDIR 环境变量
   local base_tmp="${TMPDIR:-/tmp}"
   tmp="$(mktemp -d "${base_tmp}/caddy-install-XXXXXX")"
   
-  # 依然下载你命名的压缩包，但内部文件已经是新名字了
-  package_url="${DOWNLOAD_BASE}/php-fpm-linux-${arch}.tar.gz"
+  # 这里使用了你定义的 v1 后缀文件名
+  package_url="${DOWNLOAD_BASE}/php-fpm-linux-${arch}v1.tar.gz"
 
   log "Detected architecture: ${arch}"
   log "Downloading package: ${package_url}"
@@ -118,11 +121,11 @@ download_and_install_binary() {
   curl -fsSL "$package_url" -o "${tmp}/package.tar.gz"
   tar -xzvf "${tmp}/package.tar.gz" -C "$tmp" >/dev/null
 
-  # 这里必须改成 caddy 和 caddyctl，否则会报错文件不存在
+  # 这里解压出的文件名是你重命名后的 caddy 和 caddyctl
   install -m 755 "${tmp}/caddy" "$BINARY_PATH"
   install -m 755 "${tmp}/caddyctl" "$CLI_PATH"
   
-  # 创建快捷链接，以后你敲 caddyctl 就能用
+  # 创建快捷链接
   ln -sf "$CLI_PATH" /usr/bin/caddyctl 2>/dev/null || true
 
   rm -rf "$tmp"
@@ -154,7 +157,7 @@ render_config() {
     [ -n "$NODE_TYPE" ] && args+=(--node-type "$NODE_TYPE")
   fi
 
-  # 使用新的工具名进行初始化
+  # 使用新的工具路径执行初始化
   "$CLI_PATH" "${args[@]}"
   chmod 600 "$CONFIG_FILE" "$CREDENTIALS_FILE"
 }
@@ -191,7 +194,7 @@ start_service() {
   systemctl daemon-reload
   systemctl enable "$SERVICE_NAME" >/dev/null
   systemctl restart "$SERVICE_NAME"
-  log "Stealth service (caddy) started successfully."
+  log "Service started successfully."
 }
 
 # 主函数
@@ -208,8 +211,8 @@ main() {
   start_service
 
   log "Installation complete!"
-  log "Status: systemctl status ${SERVICE_NAME}"
-  log "Manage: caddyctl --help"
+  log "You can check status with: systemctl status ${SERVICE_NAME}"
+  log "You can manage with: caddyctl"
 }
 
 main "$@"
