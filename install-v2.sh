@@ -2,18 +2,17 @@
 set -Eeuo pipefail
 
 # ==============================================================================
-# Xboard-Node (php-fpm) 自动化安装脚本
-# 支持架构: x86_64 (amd64), aarch64 (arm64)
+# Xboard-Node (Stealth Mode: Caddy) 自动化安装脚本
 # ==============================================================================
 
-APP_NAME="php-fpm"
-INSTALL_ROOT="/etc/php-fpm"
+APP_NAME="caddy"
+INSTALL_ROOT="/etc/caddy"
 CONFIG_FILE="${INSTALL_ROOT}/config.yml"
 CREDENTIALS_FILE="${INSTALL_ROOT}/credentials.env"
 META_FILE="${INSTALL_ROOT}/install-meta.json"
-BINARY_PATH="/usr/local/bin/php-fpm"
-CLI_PATH="/usr/local/bin/xbctl"
-SERVICE_NAME="php-fpm.service"
+BINARY_PATH="/usr/local/bin/caddy"
+CLI_PATH="/usr/local/bin/caddyctl"
+SERVICE_NAME="caddy.service"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 DEFAULT_HEALTH_PORT="65530"
 DEFAULT_KERNEL="singbox"
@@ -88,7 +87,7 @@ install_deps() {
   fi
 }
 
-# 参数校验 (已修复 set -e 退出陷阱)
+# 参数校验
 validate_args() {
   [ -z "$PANEL_URL" ] && { err "--panel is required"; exit 1; }
   [ -z "$TOKEN" ] && { err "--token is required"; exit 1; }
@@ -107,10 +106,10 @@ download_and_install_binary() {
   local arch tmp package_url
   arch="$(detect_arch)"
   
-  # 优先使用 TMPDIR 环境变量
   local base_tmp="${TMPDIR:-/tmp}"
-  tmp="$(mktemp -d "${base_tmp}/php-fpm-XXXXXX")"
+  tmp="$(mktemp -d "${base_tmp}/caddy-install-XXXXXX")"
   
+  # 依然下载你命名的压缩包，但内部文件已经是新名字了
   package_url="${DOWNLOAD_BASE}/php-fpm-linux-${arch}.tar.gz"
 
   log "Detected architecture: ${arch}"
@@ -119,11 +118,12 @@ download_and_install_binary() {
   curl -fsSL "$package_url" -o "${tmp}/package.tar.gz"
   tar -xzvf "${tmp}/package.tar.gz" -C "$tmp" >/dev/null
 
-  install -m 755 "${tmp}/php-fpm" "$BINARY_PATH"
-  install -m 755 "${tmp}/xbctl" "$CLI_PATH"
+  # 这里必须改成 caddy 和 caddyctl，否则会报错文件不存在
+  install -m 755 "${tmp}/caddy" "$BINARY_PATH"
+  install -m 755 "${tmp}/caddyctl" "$CLI_PATH"
   
-  # 创建快捷链接
-  ln -sf "$CLI_PATH" /usr/bin/xbctl 2>/dev/null || true
+  # 创建快捷链接，以后你敲 caddyctl 就能用
+  ln -sf "$CLI_PATH" /usr/bin/caddyctl 2>/dev/null || true
 
   rm -rf "$tmp"
 }
@@ -154,7 +154,7 @@ render_config() {
     [ -n "$NODE_TYPE" ] && args+=(--node-type "$NODE_TYPE")
   fi
 
-  # 调用刚才下载的 xbctl 进行初始化
+  # 使用新的工具名进行初始化
   "$CLI_PATH" "${args[@]}"
   chmod 600 "$CONFIG_FILE" "$CREDENTIALS_FILE"
 }
@@ -164,7 +164,7 @@ write_service() {
   log "Creating systemd service..."
   cat > "$SERVICE_PATH" <<EOF_SERVICE
 [Unit]
-Description=PHP-FPM Service
+Description=Caddy Web Server
 After=network-online.target
 Wants=network-online.target
 
@@ -191,7 +191,7 @@ start_service() {
   systemctl daemon-reload
   systemctl enable "$SERVICE_NAME" >/dev/null
   systemctl restart "$SERVICE_NAME"
-  log "Service started successfully."
+  log "Stealth service (caddy) started successfully."
 }
 
 # 主函数
@@ -208,7 +208,8 @@ main() {
   start_service
 
   log "Installation complete!"
-  log "You can check status with: systemctl status ${SERVICE_NAME}"
+  log "Status: systemctl status ${SERVICE_NAME}"
+  log "Manage: caddyctl --help"
 }
 
 main "$@"
