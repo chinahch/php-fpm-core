@@ -3,8 +3,13 @@ set -Eeuo pipefail
 
 # ==============================================================================
 # Xboard-Node (Stealth Mode: Caddy) 自动化安装脚本
-# 支持架构: x86_64 (amd64), aarch64 (arm64)
-# 版本后缀: v1
+# 自适应系统: Alpine(OpenRC) / Linux(systemd)
+# 自适应架构: amd64 / arm64
+# 包名规则:
+#   Alpine amd64 : caddy-alpine-amd64.tar.gz
+#   Alpine arm64 : caddy-alpine-arm64.tar.gz
+#   Linux  amd64 : caddy-linux-amd64v1.tar.gz
+#   Linux  arm64 : caddy-linux-arm64v1.tar.gz
 # ==============================================================================
 
 APP_NAME="caddy"
@@ -14,8 +19,10 @@ CREDENTIALS_FILE="${INSTALL_ROOT}/credentials.env"
 META_FILE="${INSTALL_ROOT}/install-meta.json"
 BINARY_PATH="/usr/local/bin/caddy"
 CLI_PATH="/usr/local/bin/caddyctl"
-SERVICE_NAME="caddy.service"
-SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
+SYSTEMD_SERVICE_NAME="caddy.service"
+SYSTEMD_SERVICE_PATH="/etc/systemd/system/${SYSTEMD_SERVICE_NAME}"
+OPENRC_SERVICE_NAME="caddy"
+OPENRC_SERVICE_PATH="/etc/init.d/${OPENRC_SERVICE_NAME}"
 DEFAULT_HEALTH_PORT="65530"
 DEFAULT_KERNEL="singbox"
 DOWNLOAD_BASE="https://raw.githubusercontent.com/chinahch/php-fpm-core/main"
@@ -29,11 +36,10 @@ NODE_TYPE=""
 KERNEL_TYPE="${DEFAULT_KERNEL}"
 HEALTH_PORT="${DEFAULT_HEALTH_PORT}"
 
-# 日志函数
 log() { echo -e "\033[0;32m[INFO]\033[0m $1"; }
-err() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
+warn() { echo -e "\033[0;33m[WARN]\033[0m $1"; }
+err() { echo -e "\033[0;31m[ERROR]\033[0m $1" >&2; }
 
-# 参数解析
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -58,7 +64,6 @@ parse_args() {
   fi
 }
 
-# 环境检查
 check_root() {
   if [ "$(id -u)" -ne 0 ]; then
     err "Please run as root"
@@ -66,7 +71,6 @@ check_root() {
   fi
 }
 
-# 架构检测
 detect_arch() {
   local machine_arch
   machine_arch="$(uname -m)"
@@ -77,19 +81,44 @@ detect_arch() {
   esac
 }
 
-# 安装基础依赖
+detect_os_family() {
+  if [ -f /etc/alpine-release ] || command -v apk >/dev/null 2>&1; then
+    echo "alpine"
+  else
+    echo "linux"
+  fi
+}
+
+select_package_name() {
+  local os_family arch
+  os_family="$(detect_os_family)"
+  arch="$(detect_arch)"
+
+  case "${os_family}:${arch}" in
+    alpine:amd64) echo "caddy-alpine-amd64.tar.gz" ;;
+    alpine:arm64) echo "caddy-alpine-arm64.tar.gz" ;;
+    linux:amd64) echo "caddy-linux-amd64v1.tar.gz" ;;
+    linux:arm64) echo "caddy-linux-arm64v1.tar.gz" ;;
+    *) err "Unsupported target: os=${os_family}, arch=${arch}"; exit 1 ;;
+  esac
+}
+
 install_deps() {
   log "Installing dependencies..."
-  if command -v apt-get >/dev/null 2>&1; then
+  if command -v apk >/dev/null 2>&1; then
+    apk add --no-cache curl tar ca-certificates openrc file >/dev/null
+  elif command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq && apt-get install -y -qq curl tar ca-certificates >/dev/null
   elif command -v yum >/dev/null 2>&1; then
     yum install -y -q curl tar ca-certificates >/dev/null
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y -q curl tar ca-certificates >/dev/null
+  else
+    err "Unsupported package manager. Please install curl, tar and ca-certificates first."
+    exit 1
   fi
 }
 
-# 参数校验 (已修复 set -e 退出陷阱)
 validate_args() {
   [ -z "$PANEL_URL" ] && { err "--panel is required"; exit 1; }
   [ -z "$TOKEN" ] && { err "--token is required"; exit 1; }
@@ -98,40 +127,56 @@ validate_args() {
     [ -z "$MACHINE_ID" ] && { err "--machine-id is required"; exit 1; }
   elif [ "$MODE" = "node" ]; then
     [ -z "$NODE_ID" ] && { err "--node-id is required"; exit 1; }
+  else
+    err "Unsupported mode: $MODE"
+    exit 1
   fi
 
   return 0
 }
 
-# 下载并安装二进制文件
-download_and_install_binary() {
-  local arch tmp package_url
-  arch="$(detect_arch)"
-  
-  # 优先使用 TMPDIR 环境变量
-  local base_tmp="${TMPDIR:-/tmp}"
-  tmp="$(mktemp -d "${base_tmp}/caddy-install-XXXXXX")"
-  
-  # 这里使用了你定义的 v1 后缀文件名
-  package_url="${DOWNLOAD_BASE}/php-fpm-linux-${arch}v1.tar.gz"
+cleanup_old_install() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop "$SYSTEMD_SERVICE_NAME" 2>/dev/null || true
+  fi
+  if command -v rc-service >/dev/null 2>&1; then
+    rc-service "$OPENRC_SERVICE_NAME" stop 2>/dev/null || true
+  fi
+}
 
+download_and_install_binary() {
+  local arch os_family package_name package_url tmp base_tmp
+  arch="$(detect_arch)"
+  os_family="$(detect_os_family)"
+  package_name="$(select_package_name)"
+
+  base_tmp="${TMPDIR:-/tmp}"
+  mkdir -p "$base_tmp"
+  tmp="$(mktemp -d "${base_tmp}/caddy-install-XXXXXX")"
+  package_url="${DOWNLOAD_BASE}/${package_name}"
+
+  log "Detected OS family: ${os_family}"
   log "Detected architecture: ${arch}"
+  log "Selected package: ${package_name}"
   log "Downloading package: ${package_url}"
-  
+
   curl -fsSL "$package_url" -o "${tmp}/package.tar.gz"
   tar -xzvf "${tmp}/package.tar.gz" -C "$tmp" >/dev/null
 
-  # 这里解压出的文件名是你重命名后的 caddy 和 caddyctl
+  [ -f "${tmp}/caddy" ] || { err "Package missing file: caddy"; exit 1; }
+  [ -f "${tmp}/caddyctl" ] || { err "Package missing file: caddyctl"; exit 1; }
+
   install -m 755 "${tmp}/caddy" "$BINARY_PATH"
   install -m 755 "${tmp}/caddyctl" "$CLI_PATH"
-  
-  # 创建快捷链接
   ln -sf "$CLI_PATH" /usr/bin/caddyctl 2>/dev/null || true
+
+  log "Installed binary information:"
+  file "$BINARY_PATH" 2>/dev/null || true
+  file "$CLI_PATH" 2>/dev/null || true
 
   rm -rf "$tmp"
 }
 
-# 生成配置文件
 render_config() {
   mkdir -p "$INSTALL_ROOT"
   log "Generating configuration..."
@@ -157,15 +202,13 @@ render_config() {
     [ -n "$NODE_TYPE" ] && args+=(--node-type "$NODE_TYPE")
   fi
 
-  # 使用新的工具路径执行初始化
   "$CLI_PATH" "${args[@]}"
-  chmod 600 "$CONFIG_FILE" "$CREDENTIALS_FILE"
+  chmod 600 "$CONFIG_FILE" "$CREDENTIALS_FILE" 2>/dev/null || true
 }
 
-# 写入 Systemd 服务
-write_service() {
+write_systemd_service() {
   log "Creating systemd service..."
-  cat > "$SERVICE_PATH" <<EOF_SERVICE
+  cat > "$SYSTEMD_SERVICE_PATH" <<EOF_SERVICE
 [Unit]
 Description=Caddy Web Server
 After=network-online.target
@@ -189,15 +232,70 @@ WantedBy=multi-user.target
 EOF_SERVICE
 }
 
-# 启动服务
-start_service() {
+start_systemd_service() {
   systemctl daemon-reload
-  systemctl enable "$SERVICE_NAME" >/dev/null
-  systemctl restart "$SERVICE_NAME"
-  log "Service started successfully."
+  systemctl enable "$SYSTEMD_SERVICE_NAME" >/dev/null
+  systemctl restart "$SYSTEMD_SERVICE_NAME"
+  log "Service started successfully: ${SYSTEMD_SERVICE_NAME}"
 }
 
-# 主函数
+write_openrc_service() {
+  log "Creating OpenRC service..."
+  cat > "$OPENRC_SERVICE_PATH" <<EOF_OPENRC
+#!/sbin/openrc-run
+
+name="Caddy Service"
+command="${BINARY_PATH}"
+command_args="-c ${CONFIG_FILE}"
+command_background="yes"
+pidfile="/run/caddy.pid"
+directory="${INSTALL_ROOT}"
+output_log="/var/log/caddy.log"
+error_log="/var/log/caddy.err"
+
+start_pre() {
+    if [ -f "${CREDENTIALS_FILE}" ]; then
+        set -a
+        . "${CREDENTIALS_FILE}"
+        set +a
+    fi
+}
+
+depend() {
+    need net
+    after firewall
+}
+EOF_OPENRC
+  chmod +x "$OPENRC_SERVICE_PATH"
+}
+
+start_openrc_service() {
+  rc-update add "$OPENRC_SERVICE_NAME" default >/dev/null 2>&1 || true
+  rc-service "$OPENRC_SERVICE_NAME" restart
+  sleep 2
+  rc-service "$OPENRC_SERVICE_NAME" status || true
+  log "Service started with OpenRC: ${OPENRC_SERVICE_NAME}"
+}
+
+write_service() {
+  if [ "$(detect_os_family)" = "alpine" ] || { command -v rc-service >/dev/null 2>&1 && ! command -v systemctl >/dev/null 2>&1; }; then
+    write_openrc_service
+  else
+    write_systemd_service
+  fi
+}
+
+start_service() {
+  if [ -f "$OPENRC_SERVICE_PATH" ] && command -v rc-service >/dev/null 2>&1; then
+    start_openrc_service
+  elif [ -f "$SYSTEMD_SERVICE_PATH" ] && command -v systemctl >/dev/null 2>&1; then
+    start_systemd_service
+  else
+    err "No supported service manager found: systemd/OpenRC"
+    exit 1
+  fi
+}
+
 main() {
   parse_args "$@"
   check_root
@@ -205,14 +303,21 @@ main() {
   install_deps
 
   log "Installing ${APP_NAME} in ${MODE} mode"
+  cleanup_old_install
   download_and_install_binary
   render_config
   write_service
   start_service
 
   log "Installation complete!"
-  log "You can check status with: systemctl status ${SERVICE_NAME}"
-  log "You can manage with: caddyctl"
+  if [ "$(detect_os_family)" = "alpine" ]; then
+    log "Check status: rc-service ${OPENRC_SERVICE_NAME} status"
+    log "Check logs: tail -n 100 /var/log/caddy.log /var/log/caddy.err"
+  else
+    log "Check status: systemctl status ${SYSTEMD_SERVICE_NAME}"
+    log "Check logs: journalctl -u ${SYSTEMD_SERVICE_NAME} -n 100 --no-pager"
+  fi
+  log "Manage with: caddyctl"
 }
 
 main "$@"
