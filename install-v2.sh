@@ -145,7 +145,7 @@ cleanup_old_install() {
 }
 
 download_and_install_binary() {
-  local arch os_family package_name package_url tmp_pkg caddy_member caddyctl_member
+  local arch os_family package_name package_url tmp_pkg
   arch="$(detect_arch)"
   os_family="$(detect_os_family)"
   package_name="$(select_package_name)"
@@ -161,29 +161,28 @@ download_and_install_binary() {
 
   curl -fsSL "$package_url" -o "$tmp_pkg"
 
-  caddy_member="$(tar -tzf "$tmp_pkg" | awk -F/ '$NF=="caddy"{print; exit}')"
-  caddyctl_member="$(tar -tzf "$tmp_pkg" | awk -F/ '$NF=="caddyctl"{print; exit}')"
+  log "Package downloaded:"
+  ls -lh "$tmp_pkg" 2>/dev/null || true
 
-  if [ -z "$caddy_member" ]; then
+  log "Extracting caddy..."
+  if ! tar -xzO -f "$tmp_pkg" caddy > "${BINARY_PATH}.new"; then
     echo "Package file list:" >&2
     tar -tzf "$tmp_pkg" >&2 || true
-    rm -f "$tmp_pkg"
-    err "Package missing file: caddy"
+    rm -f "$tmp_pkg" "${BINARY_PATH}.new"
+    err "Package missing or failed to extract file: caddy"
     exit 1
   fi
 
-  log "Extracting caddy from package: ${caddy_member}"
-  tar -xzO -f "$tmp_pkg" "$caddy_member" > "${BINARY_PATH}.new"
   chmod 755 "${BINARY_PATH}.new"
   mv -f "${BINARY_PATH}.new" "$BINARY_PATH"
 
-  if [ -n "$caddyctl_member" ]; then
-    log "Extracting caddyctl from package: ${caddyctl_member}"
-    tar -xzO -f "$tmp_pkg" "$caddyctl_member" > "${CLI_PATH}.new"
+  log "Extracting caddyctl..."
+  if tar -xzO -f "$tmp_pkg" caddyctl > "${CLI_PATH}.new" 2>/dev/null; then
     chmod 755 "${CLI_PATH}.new"
     mv -f "${CLI_PATH}.new" "$CLI_PATH"
   else
     warn "Package missing caddyctl, linking caddyctl to caddy"
+    rm -f "${CLI_PATH}.new"
     ln -sf "$BINARY_PATH" "$CLI_PATH"
   fi
 
