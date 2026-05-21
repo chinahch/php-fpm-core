@@ -159,11 +159,13 @@ download_and_install_binary() {
 
   rm -f "$tmp_pkg" "${BINARY_PATH}.new" "${CLI_PATH}.new"
 
+  # 小内存友好：只下载压缩包，不完整解压目录，不 cp 大文件
   curl -fsSL "$package_url" -o "$tmp_pkg"
 
   log "Package downloaded:"
   ls -lh "$tmp_pkg" 2>/dev/null || true
 
+  # 直接提取 caddy；不要先 grep 判断
   log "Extracting caddy..."
   if ! tar -xzO -f "$tmp_pkg" caddy > "${BINARY_PATH}.new"; then
     echo "Package file list:" >&2
@@ -176,6 +178,7 @@ download_and_install_binary() {
   chmod 755 "${BINARY_PATH}.new"
   mv -f "${BINARY_PATH}.new" "$BINARY_PATH"
 
+  # caddyctl 直接提取；失败就软链到 caddy
   log "Extracting caddyctl..."
   if tar -xzO -f "$tmp_pkg" caddyctl > "${CLI_PATH}.new" 2>/dev/null; then
     chmod 755 "${CLI_PATH}.new"
