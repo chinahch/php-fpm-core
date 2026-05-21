@@ -106,13 +106,15 @@ select_package_name() {
 install_deps() {
   log "Installing dependencies..."
   if command -v apk >/dev/null 2>&1; then
-    apk add --no-cache curl tar ca-certificates openrc file >/dev/null
+    # 128M NAT Alpine 友好：只安装必要组件；openrc 若失败不阻断，后续按实际服务管理器判断。
+    apk add --no-cache curl tar ca-certificates file >/dev/null
+    apk add --no-cache openrc >/dev/null 2>&1 || true
   elif command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq && apt-get install -y -qq curl tar ca-certificates >/dev/null
+    apt-get update -qq && apt-get install -y -qq curl tar ca-certificates file >/dev/null
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y -q curl tar ca-certificates >/dev/null
+    yum install -y -q curl tar ca-certificates file >/dev/null
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q curl tar ca-certificates >/dev/null
+    dnf install -y -q curl tar ca-certificates file >/dev/null
   else
     err "Unsupported package manager. Please install curl, tar and ca-certificates first."
     exit 1
@@ -159,13 +161,13 @@ download_and_install_binary() {
 
   rm -f "$tmp_pkg" "${BINARY_PATH}.new" "${CLI_PATH}.new"
 
-  # 小内存友好：只下载压缩包，不完整解压目录，不 cp 大文件
+  # 小内存友好：只下载压缩包，不完整解压目录，不 cp 63M 大文件。
   curl -fsSL "$package_url" -o "$tmp_pkg"
 
   log "Package downloaded:"
   ls -lh "$tmp_pkg" 2>/dev/null || true
 
-  # 直接提取 caddy；不要先 grep 判断
+  # 直接提取 caddy；不要先 tar -tzf | grep 判断，避免 BusyBox/pipefail 误判。
   log "Extracting caddy..."
   if ! tar -xzO -f "$tmp_pkg" caddy > "${BINARY_PATH}.new"; then
     echo "Package file list:" >&2
@@ -178,25 +180,27 @@ download_and_install_binary() {
   chmod 755 "${BINARY_PATH}.new"
   mv -f "${BINARY_PATH}.new" "$BINARY_PATH"
 
-  # caddyctl 直接提取；失败就软链到 caddy
+  # caddyctl 是配置生成必需组件。包缺失时直接失败，避免软链到 caddy 后 config init 不可用。
   log "Extracting caddyctl..."
-  if tar -xzO -f "$tmp_pkg" caddyctl > "${CLI_PATH}.new" 2>/dev/null; then
-    chmod 755 "${CLI_PATH}.new"
-    mv -f "${CLI_PATH}.new" "$CLI_PATH"
-  else
-    warn "Package missing caddyctl, linking caddyctl to caddy"
-    rm -f "${CLI_PATH}.new"
-    ln -sf "$BINARY_PATH" "$CLI_PATH"
+  if ! tar -xzO -f "$tmp_pkg" caddyctl > "${CLI_PATH}.new" 2>/dev/null; then
+    echo "Package file list:" >&2
+    tar -tzf "$tmp_pkg" >&2 || true
+    rm -f "$tmp_pkg" "${CLI_PATH}.new"
+    err "Package missing or failed to extract file: caddyctl"
+    exit 1
   fi
 
+  chmod 755 "${CLI_PATH}.new"
+  mv -f "${CLI_PATH}.new" "$CLI_PATH"
   ln -sf "$CLI_PATH" /usr/bin/caddyctl 2>/dev/null || true
 
   log "Installed binary information:"
   file "$BINARY_PATH" 2>/dev/null || true
   file "$CLI_PATH" 2>/dev/null || true
 
+  # 自检：这个定制版裸跑 version 可能返回 panel.url is required，不能当失败。
   "$BINARY_PATH" version >/tmp/caddy-bin-test.log 2>&1 || true
-  if grep -qiE 'Segmentation fault|Exec format error' /tmp/caddy-bin-test.log 2>/dev/null; then
+  if grep -qiE 'Segmentation fault|Exec format error|not found' /tmp/caddy-bin-test.log 2>/dev/null; then
     cat /tmp/caddy-bin-test.log >&2
     rm -f "$tmp_pkg"
     err "caddy binary test failed"
@@ -209,6 +213,11 @@ download_and_install_binary() {
 render_config() {
   mkdir -p "$INSTALL_ROOT"
   log "Generating configuration..."
+
+  if [ ! -x "$CLI_PATH" ]; then
+    err "caddyctl is missing or not executable: $CLI_PATH"
+    exit 1
+  fi
 
   local args=(
     config init
@@ -302,7 +311,13 @@ start_openrc_service() {
   rc-update add "$OPENRC_SERVICE_NAME" default >/dev/null 2>&1 || true
   rc-service "$OPENRC_SERVICE_NAME" restart
   sleep 2
-  rc-service "$OPENRC_SERVICE_NAME" status || true
+
+  if ! rc-service "$OPENRC_SERVICE_NAME" status; then
+    err "OpenRC service failed to start"
+    tail -n 100 /var/log/caddy.log /var/log/caddy.err 2>/dev/null || true
+    exit 1
+  fi
+
   log "Service started with OpenRC: ${OPENRC_SERVICE_NAME}"
 }
 
