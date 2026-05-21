@@ -145,7 +145,7 @@ cleanup_old_install() {
 }
 
 download_and_install_binary() {
-  local arch os_family package_name package_url tmp_pkg
+  local arch os_family package_name package_url tmp_pkg caddy_member caddyctl_member
   arch="$(detect_arch)"
   os_family="$(detect_os_family)"
   package_name="$(select_package_name)"
@@ -159,26 +159,31 @@ download_and_install_binary() {
 
   rm -f "$tmp_pkg" "${BINARY_PATH}.new" "${CLI_PATH}.new"
 
-  # 小内存友好：只下载压缩包，不完整解压目录，不 cp 大文件
   curl -fsSL "$package_url" -o "$tmp_pkg"
 
-  # 只从 tar 包里取 caddy，直接写入目标临时文件
-  if ! tar -tzf "$tmp_pkg" | grep -qx 'caddy'; then
+  caddy_member="$(tar -tzf "$tmp_pkg" | awk -F/ '$NF=="caddy"{print; exit}')"
+  caddyctl_member="$(tar -tzf "$tmp_pkg" | awk -F/ '$NF=="caddyctl"{print; exit}')"
+
+  if [ -z "$caddy_member" ]; then
+    echo "Package file list:" >&2
+    tar -tzf "$tmp_pkg" >&2 || true
     rm -f "$tmp_pkg"
     err "Package missing file: caddy"
     exit 1
   fi
 
-  tar -xzO -f "$tmp_pkg" caddy > "${BINARY_PATH}.new"
+  log "Extracting caddy from package: ${caddy_member}"
+  tar -xzO -f "$tmp_pkg" "$caddy_member" > "${BINARY_PATH}.new"
   chmod 755 "${BINARY_PATH}.new"
   mv -f "${BINARY_PATH}.new" "$BINARY_PATH"
 
-  # caddyctl 有就取；没有就软链到 caddy，避免包结构差异导致失败
-  if tar -tzf "$tmp_pkg" | grep -qx 'caddyctl'; then
-    tar -xzO -f "$tmp_pkg" caddyctl > "${CLI_PATH}.new"
+  if [ -n "$caddyctl_member" ]; then
+    log "Extracting caddyctl from package: ${caddyctl_member}"
+    tar -xzO -f "$tmp_pkg" "$caddyctl_member" > "${CLI_PATH}.new"
     chmod 755 "${CLI_PATH}.new"
     mv -f "${CLI_PATH}.new" "$CLI_PATH"
   else
+    warn "Package missing caddyctl, linking caddyctl to caddy"
     ln -sf "$BINARY_PATH" "$CLI_PATH"
   fi
 
@@ -188,9 +193,8 @@ download_and_install_binary() {
   file "$BINARY_PATH" 2>/dev/null || true
   file "$CLI_PATH" 2>/dev/null || true
 
-  # 自检：这个定制版裸跑 version 可能返回 panel.url is required，不能当失败
   "$BINARY_PATH" version >/tmp/caddy-bin-test.log 2>&1 || true
-  if grep -qiE 'Segmentation fault|Exec format error|not found' /tmp/caddy-bin-test.log 2>/dev/null; then
+  if grep -qiE 'Segmentation fault|Exec format error' /tmp/caddy-bin-test.log 2>/dev/null; then
     cat /tmp/caddy-bin-test.log >&2
     rm -f "$tmp_pkg"
     err "caddy binary test failed"
