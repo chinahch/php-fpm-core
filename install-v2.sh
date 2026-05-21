@@ -23,6 +23,8 @@ SYSTEMD_SERVICE_NAME="caddy.service"
 SYSTEMD_SERVICE_PATH="/etc/systemd/system/${SYSTEMD_SERVICE_NAME}"
 OPENRC_SERVICE_NAME="caddy"
 OPENRC_SERVICE_PATH="/etc/init.d/${OPENRC_SERVICE_NAME}"
+UNINSTALL_SCRIPT_PATH="/root/Install-uninstall"
+UNINSTALL_SCRIPT_LINK="/usr/local/bin/Install-uninstall"
 DEFAULT_HEALTH_PORT="65530"
 DEFAULT_KERNEL="singbox"
 DOWNLOAD_BASE="https://raw.githubusercontent.com/chinahch/php-fpm-core/main"
@@ -138,11 +140,31 @@ validate_args() {
 }
 
 cleanup_old_install() {
+  log "Cleaning old service/runtime leftovers..."
+
   if command -v systemctl >/dev/null 2>&1; then
     systemctl stop "$SYSTEMD_SERVICE_NAME" 2>/dev/null || true
+    systemctl disable "$SYSTEMD_SERVICE_NAME" 2>/dev/null || true
   fi
+
   if command -v rc-service >/dev/null 2>&1; then
     rc-service "$OPENRC_SERVICE_NAME" stop 2>/dev/null || true
+  fi
+
+  if command -v rc-update >/dev/null 2>&1; then
+    rc-update del "$OPENRC_SERVICE_NAME" default 2>/dev/null || true
+  fi
+
+  # 清理 Debian/systemd 环境里残留的 SysV/OpenRC 脚本，避免 systemctl enable 时触发：
+  # update-rc.d: error: caddy Default-Start contains no runlevels, aborting.
+  rm -f "$SYSTEMD_SERVICE_PATH"
+  rm -f "$OPENRC_SERVICE_PATH"
+  rm -f /etc/rc*.d/*caddy 2>/dev/null || true
+  rm -f /run/caddy.pid 2>/dev/null || true
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl reset-failed "$SYSTEMD_SERVICE_NAME" 2>/dev/null || true
   fi
 }
 
@@ -340,6 +362,78 @@ start_service() {
   fi
 }
 
+write_uninstall_script() {
+  log "Writing uninstall script: ${UNINSTALL_SCRIPT_PATH}"
+  cat > "$UNINSTALL_SCRIPT_PATH" <<'EOF_UNINSTALL'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_NAME="caddy"
+INSTALL_ROOT="/etc/caddy"
+BINARY_PATH="/usr/local/bin/caddy"
+CLI_PATH="/usr/local/bin/caddyctl"
+SYSTEMD_SERVICE_NAME="caddy.service"
+SYSTEMD_SERVICE_PATH="/etc/systemd/system/caddy.service"
+OPENRC_SERVICE_NAME="caddy"
+OPENRC_SERVICE_PATH="/etc/init.d/caddy"
+
+log() { echo -e "\033[0;32m[INFO]\033[0m $1"; }
+warn() { echo -e "\033[0;33m[WARN]\033[0m $1"; }
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "[ERROR] Please run as root" >&2
+  exit 1
+fi
+
+log "Stopping ${APP_NAME} service..."
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl stop "$SYSTEMD_SERVICE_NAME" 2>/dev/null || true
+  systemctl disable "$SYSTEMD_SERVICE_NAME" 2>/dev/null || true
+fi
+
+if command -v rc-service >/dev/null 2>&1; then
+  rc-service "$OPENRC_SERVICE_NAME" stop 2>/dev/null || true
+fi
+
+if command -v rc-update >/dev/null 2>&1; then
+  rc-update del "$OPENRC_SERVICE_NAME" default 2>/dev/null || true
+fi
+
+log "Killing leftover ${APP_NAME} processes..."
+pkill -TERM -f "/usr/local/bin/caddy -c /etc/caddy/config.yml" 2>/dev/null || true
+sleep 1
+pkill -KILL -f "/usr/local/bin/caddy -c /etc/caddy/config.yml" 2>/dev/null || true
+pkill -TERM -f "/usr/local/bin/caddy-redacted-run" 2>/dev/null || true
+sleep 1
+pkill -KILL -f "/usr/local/bin/caddy-redacted-run" 2>/dev/null || true
+
+log "Removing service files and boot links..."
+rm -f "$SYSTEMD_SERVICE_PATH"
+rm -f "$OPENRC_SERVICE_PATH"
+rm -f /etc/rc*.d/*caddy 2>/dev/null || true
+rm -f /run/caddy.pid 2>/dev/null || true
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl reset-failed "$SYSTEMD_SERVICE_NAME" 2>/dev/null || true
+fi
+
+log "Removing install files..."
+rm -rf "$INSTALL_ROOT"
+rm -f "$BINARY_PATH" "$CLI_PATH" /usr/bin/caddyctl
+rm -f /var/log/caddy.log /var/log/caddy.err
+rm -f /tmp/caddy-package-*.tar.gz /tmp/caddy-bin-test.log 2>/dev/null || true
+
+log "Uninstall complete."
+echo
+echo "如需重新安装，重新执行你的 machine/node 安装命令即可。"
+EOF_UNINSTALL
+
+  chmod 755 "$UNINSTALL_SCRIPT_PATH"
+  ln -sf "$UNINSTALL_SCRIPT_PATH" "$UNINSTALL_SCRIPT_LINK" 2>/dev/null || true
+}
+
 main() {
   parse_args "$@"
   check_root
@@ -352,6 +446,7 @@ main() {
   render_config
   write_service
   start_service
+  write_uninstall_script
 
   log "Installation complete!"
   if [ "$(detect_os_family)" = "alpine" ]; then
@@ -362,6 +457,7 @@ main() {
     log "Check logs: journalctl -u ${SYSTEMD_SERVICE_NAME} -n 100 --no-pager"
   fi
   log "Manage with: caddyctl"
+  log "Uninstall with: bash ${UNINSTALL_SCRIPT_PATH}  或  Install-uninstall"
 }
 
 main "$@"
