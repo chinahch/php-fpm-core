@@ -108,9 +108,15 @@ select_package_name() {
 install_deps() {
   log "Installing dependencies..."
   if command -v apk >/dev/null 2>&1; then
-    # 128M NAT Alpine 友好：只安装必要组件；openrc 若失败不阻断，后续按实际服务管理器判断。
+    # 128M NAT Alpine 友好：只安装必要组件。
+    # openrc 自带 supervise-daemon，用于 Caddy 异常退出后的自动拉起。
     apk add --no-cache curl tar ca-certificates file >/dev/null
     apk add --no-cache openrc >/dev/null 2>&1 || true
+
+    if ! command -v supervise-daemon >/dev/null 2>&1; then
+      err "supervise-daemon is required on Alpine but was not found"
+      exit 1
+    fi
   elif command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq && apt-get install -y -qq curl tar ca-certificates file >/dev/null
   elif command -v yum >/dev/null 2>&1; then
@@ -269,16 +275,29 @@ start_systemd_service() {
 }
 
 write_openrc_service() {
-  log "Creating OpenRC service..."
+  log "Creating OpenRC service with supervise-daemon auto-restart..."
+
+  if ! command -v supervise-daemon >/dev/null 2>&1; then
+    err "supervise-daemon is not available; cannot enable Alpine auto-restart"
+    exit 1
+  fi
+
   cat > "$OPENRC_SERVICE_PATH" <<EOF_OPENRC
 #!/sbin/openrc-run
 
 name="Caddy Service"
+description="Caddy Web Server"
+
 command="${BINARY_PATH}"
 command_args="-c ${CONFIG_FILE}"
-command_background="yes"
-pidfile="/run/caddy.pid"
 directory="${INSTALL_ROOT}"
+
+# 由 OpenRC supervise-daemon 守护：
+# Caddy 异常退出后约 3 秒自动拉起；0 表示不限制自动重启次数。
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=0
+
 output_log="/var/log/caddy.log"
 error_log="/var/log/caddy.err"
 
@@ -309,7 +328,7 @@ start_openrc_service() {
     exit 1
   fi
 
-  log "Service started with OpenRC: ${OPENRC_SERVICE_NAME}"
+  log "Service started with OpenRC + supervise-daemon auto-restart: ${OPENRC_SERVICE_NAME}"
 }
 
 write_service() {
