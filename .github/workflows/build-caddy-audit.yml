@@ -5,7 +5,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -108,3 +108,30 @@ jobs:
           name: caddy-linux-${{ matrix.arch }}v1
           path: src/caddy-linux-${{ matrix.arch }}v1.tar.gz
           if-no-files-found: error
+
+  publish:
+    name: Publish audited binaries
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download audited architecture packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: caddy-linux-*
+          path: packages
+          merge-multiple: true
+
+      - name: Publish versioned release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="caddy-audit-0a29338"
+          ls -lh packages/
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Caddy with opt-in domain audit (0a29338)" \
+              --notes "Opt-in per-XBoard-user destination audit; source pinned to cedar2025/Xboard-Node 0a29338. Linux static CGO_ENABLED=0 binaries for AMD64 and ARM64, including Alpine."
+          gh release upload "$TAG" packages/caddy-linux-amd64v1.tar.gz packages/caddy-linux-arm64v1.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --clobber
