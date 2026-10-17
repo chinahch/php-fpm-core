@@ -22,8 +22,20 @@ replace_once('globalDevices: make(map[int]map[string]bool),',
     'globalDevices: make(map[int]map[string]bool),\n\t\taudit: domainaudit.Default(),')
 replace_once('\t// Register connection\n\tif us != nil {',
     '\tt.recordDestination(uid, metadata, "tcp")\n\n\t// Register connection\n\tif us != nil {')
-replace_once('\tif us != nil {\n\t\tus.addConn(sourceIP)\n\t}\n\n\tconnID := t.nextID()',
-    '\tt.recordDestination(uid, metadata, "udp")\n\n\tif us != nil {\n\t\tus.addConn(sourceIP)\n\t}\n\n\tconnID := t.nextID()')
+udp_start = s.find('func (t *ConnTracker) RoutedPacketConnection(')
+if udp_start < 0:
+    sys.exit('missing RoutedPacketConnection')
+udp_head = s[:udp_start]
+udp_body = s[udp_start:]
+udp_anchor = '\tif us != nil {\n\t\tus.addConn(sourceIP)\n\t}\n\n\tconnID := t.nextID()'
+if udp_body.count(udp_anchor) != 1:
+    sys.exit('upstream UDP registration layout has changed')
+udp_body = udp_body.replace(
+    udp_anchor,
+    '\tt.recordDestination(uid, metadata, "udp")\n\n' + udp_anchor,
+    1,
+)
+s = udp_head + udp_body
 insert = '''// recordDestination only records accepted connections and XBoard numeric user IDs.
 func (t *ConnTracker) recordDestination(uid int, md adapter.InboundContext, network string) {
     if t.audit == nil || uid <= 0 { return }
