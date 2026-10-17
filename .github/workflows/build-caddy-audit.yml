@@ -1,0 +1,115 @@
+name: Build Caddy with opt-in domain audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Xboard-Node branch, tag, or commit
+        required: true
+        default: 0a29338
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Linux ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+
+    steps:
+      - name: Check out domain audit overlay
+        uses: actions/checkout@v4
+        with:
+          path: customization
+
+      - name: Check out upstream Xboard-Node source
+        uses: actions/checkout@v4
+        with:
+          repository: cedar2025/Xboard-Node
+          ref: ${{ inputs.source_ref }}
+          path: src
+
+      - name: Apply audit Go source overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -R customization/audit-overlay/internal/domainaudit src/internal/domainaudit
+          python3 customization/scripts/patch_source.py src
+
+      - name: Install Go version required by source
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Test audit module
+        run: cd src && go test -count=1 ./internal/domainaudit
+
+      - name: Compile Caddy-named binaries and create package
+        shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          cd src
+
+          # The upstream CLI uses /etc/xboard-node and xboard-node.service.
+          # Point those CLI defaults to this repository's caddy installer paths.
+          python3 - <<'PY'
+          from pathlib import Path
+          file = Path('cmd/xbctl/main.go')
+          src = file.read_text()
+          replacements = {
+              '/etc/xboard-node': '/etc/caddy',
+              '/usr/local/bin/xboard-node': '/usr/local/bin/caddy',
+              '/usr/local/bin/xbctl': '/usr/local/bin/caddyctl',
+              'xboard-node.service': 'caddy.service',
+          }
+          for old, new in replacements.items():
+              if old not in src:
+                  raise SystemExit(f'Expected CLI default not found: {old}')
+              src = src.replace(old, new)
+
+          # Upstream upgrade downloads upstream-named binaries. Disable it so
+          # caddyctl cannot silently replace the custom-built caddy binary.
+          old = 'case "upgrade":\n\t\treturn runUpgrade(args[1:])'
+          new = 'case "upgrade":\n\t\treturn fmt.Errorf("custom caddy build: use a tested custom package instead of upgrade")'
+          if old not in src:
+              raise SystemExit('Expected CLI upgrade handler not found')
+          src = src.replace(old, new, 1)
+          file.write_text(src)
+          PY
+
+          VERSION="custom-audit-$(git rev-parse --short HEAD)"
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export CGO_ENABLED=0 GOOS=linux GOARCH="$TARGET_ARCH"
+          if [ "$TARGET_ARCH" = amd64 ]; then
+            export GOAMD64=v1
+          fi
+
+          mkdir -p dist
+          go build -trimpath \
+            -tags 'with_quic with_utls with_wireguard with_acme with_clash_api' \
+            -ldflags "-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
+            -o dist/caddy ./cmd/xboard-node
+
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
+            -o dist/caddyctl ./cmd/xbctl
+
+          go version -m dist/caddy
+          tar -czf "caddy-linux-${TARGET_ARCH}v1.tar.gz" -C dist caddy caddyctl
+          sha256sum "caddy-linux-${TARGET_ARCH}v1.tar.gz"
+          tar -tzf "caddy-linux-${TARGET_ARCH}v1.tar.gz"
+
+      - name: Downloadable build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: caddy-linux-${{ matrix.arch }}v1
+          path: src/caddy-linux-${{ matrix.arch }}v1.tar.gz
+          if-no-files-found: error
