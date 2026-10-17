@@ -110,6 +110,7 @@ fi
 WORK=$(mktemp -d)
 BACKUP=
 SWAPPED=0
+ENV_CHANGED=0
 cleanup(){ rm -rf "$WORK"; }
 restart_service(){
   if [ "$SERVICE" = systemd ]; then systemctl restart caddy.service
@@ -128,13 +129,14 @@ service_ok(){
 rollback(){
   status=$?
   trap - EXIT HUP INT TERM
+  if [ "$ENV_CHANGED" -eq 1 ] && [ -n "$BACKUP" ] && [ -f "$BACKUP/credentials.env" ]; then
+    msg "ROLLBACK: restoring previous environment ($BACKUP)"
+    install -m 600 "$BACKUP/credentials.env" "$ENVFILE" || msg "ERROR: could not restore environment"
+  fi
   if [ "$SWAPPED" -eq 1 ] && [ -n "$BACKUP" ]; then
-    msg "ROLLBACK: restoring backed-up Caddy and environment ($BACKUP)"
+    msg "ROLLBACK: restoring backed-up Caddy ($BACKUP)"
     if install -m 755 "$BACKUP/caddy" "$WORK/caddy.rollback"; then
       mv -f "$WORK/caddy.rollback" "$BIN" || msg "ERROR: could not restore executable"
-      if [ -f "$BACKUP/credentials.env" ]; then
-        install -m 600 "$BACKUP/credentials.env" "$ENVFILE" || msg "ERROR: could not restore environment"
-      fi
       restart_service || msg "WARNING: original service failed to restart; inspect logs"
     else
       msg "ERROR: could not stage rollback executable"
@@ -205,7 +207,9 @@ if [ "$ENABLE_AUDIT" -eq 1 ] || [ -n "$GOMEMLIMIT_SETTING" ]; then
   else
     grep '^GOMEMLIMIT=' "$ENVFILE" >> "$WORK/env" || true
   fi
-  install -m 600 "$WORK/env" "$ENVFILE"
+  install -m 600 "$WORK/env" "$WORK/credentials.new"
+  ENV_CHANGED=1
+  mv -f "$WORK/credentials.new" "$ENVFILE"
 fi
 
 install -m 755 "$WORK/files/caddy" "$WORK/caddy.new"
@@ -248,5 +252,6 @@ msg "SUCCESS: $v"
 msg "Backup saved: $BACKUP"
 msg "Check proxy connections, users, panel sync and audit .jsonl files manually."
 SWAPPED=0
+ENV_CHANGED=0
 trap - EXIT HUP INT TERM
 cleanup
