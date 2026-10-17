@@ -14,6 +14,7 @@ def main():
     p.add_argument("--dir",default="/var/log/caddy/domain-audit")
     p.add_argument("--network",choices=("tcp","udp"))
     p.add_argument("--show-events",action="store_true")
+    p.add_argument("--utc", action="store_true", help="Display timestamps in UTC instead of server local time")
     p.add_argument("--limit",type=int,default=20)
     a=p.parse_args()
     if a.user<=0 or not 1<=a.days<=365 or not 1<=a.top<=500 or not 1<=a.limit<=100:
@@ -49,9 +50,13 @@ def main():
     for target,count in counts.most_common(a.top):
         print(f"{count}\t{target}")
     if a.show_events:
-        print("\nrecent connections (UTC)")
+        # Audit events are stored in UTC; only output is converted.
+        display_tz = dt.timezone.utc if a.utc else dt.datetime.now().astimezone().tzinfo
+        display_label = "UTC" if a.utc else "server local time"
+        print(f"\nrecent connections ({display_label})")
         for stamp,event in sorted(events,reverse=True,key=lambda item:item[0])[:a.limit]:
-            print(f"{stamp.isoformat()}\t{event.get('network','')}\t{event.get('target','')}:{event.get('port','')}")
+            output_time = stamp.astimezone(display_tz).isoformat(timespec="seconds")
+            print(f"{output_time}\t{event.get('network','')}\t{event.get('target','')}:{event.get('port','')}")
 
 if __name__=="__main__":
     main()
