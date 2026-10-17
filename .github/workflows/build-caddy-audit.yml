@@ -22,6 +22,9 @@ jobs:
         with:
           path: customization
 
+      - name: Validate POSIX Alpine installer syntax
+        run: sh -n customization/install-caddy-audit.sh
+
       - name: Check out upstream Xboard-Node source
         uses: actions/checkout@v4
         with:
@@ -80,7 +83,7 @@ jobs:
           file.write_text(src)
           PY
 
-          VERSION="custom-audit-$(git rev-parse --short HEAD)"
+          VERSION="custom-audit-lowmem-$(git rev-parse --short HEAD)"
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           export CGO_ENABLED=0 GOOS=linux GOARCH="$TARGET_ARCH"
           if [ "$TARGET_ARCH" = amd64 ]; then
@@ -127,11 +130,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="caddy-audit-0a29338"
+          TAG="caddy-audit-lowmem-rc-${GITHUB_RUN_NUMBER}"
           ls -lh packages/
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --title "Caddy with opt-in domain audit (0a29338)" \
-              --notes "Opt-in per-XBoard-user destination audit; source pinned to cedar2025/Xboard-Node 0a29338. Linux static CGO_ENABLED=0 binaries for AMD64 and ARM64, including Alpine."
+              --title "Caddy audit low-memory release candidate ${GITHUB_RUN_NUMBER}" \
+              --notes "EXPERIMENTAL LOW-MEMORY RC: reduced audit buffer and safer installer. NOT validated on 128 MiB Alpine ARM64. Use --check-only and a test host; do not replace live nodes until verified."
           gh release upload "$TAG" packages/caddy-linux-amd64v1.tar.gz packages/caddy-linux-arm64v1.tar.gz \
             --repo "$GITHUB_REPOSITORY" --clobber
