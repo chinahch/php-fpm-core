@@ -87,13 +87,13 @@ func New(dir string, retentionDays, nodeID int) (*Recorder, error) {
     }
     recorder := &Recorder{
         dir: dir, retention: retentionDays, nodeID: nodeID,
-        events: make(chan Event, 4096),
+        events: make(chan Event, 512),
     }
     go recorder.run()
     return recorder, nil
 }
 
-// Record never blocks a routed connection. Overflow drops an audit entry,
+// Record never blocks a routed connection. The bounded 512-event queue limits\n// memory usage on small Alpine containers. Overflow drops an audit entry,
 // not the user's connection. The dropped total is reported once per minute.
 func (r *Recorder) Record(e Event) {
     if r == nil || e.UserID <= 0 { return }
@@ -156,7 +156,7 @@ func (r *Recorder) run() {
                     continue
                 }
                 file = f
-                writer = bufio.NewWriterSize(file, 64 * 1024)
+                writer = bufio.NewWriterSize(file, 8 * 1024)
             }
             if writer == nil { continue }
             b, err := json.Marshal(e)
