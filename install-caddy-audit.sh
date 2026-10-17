@@ -223,10 +223,22 @@ restart_service || die "Service restart failed"
 msg "Waiting for the real Caddy process to remain alive..."
 deadline=0
 stable=0
+last_pid=
 while [ "$deadline" -lt 25 ]; do
   sleep 1
   deadline=$((deadline+1))
-  if service_ok; then stable=$((stable+1)); else stable=0; fi
+  if service_ok; then
+    current_pid=$(pidof caddy | awk '{print $1}')
+    if [ -n "$current_pid" ] && [ "$current_pid" = "$last_pid" ]; then
+      stable=$((stable+1))
+    else
+      stable=1
+    fi
+    last_pid=$current_pid
+  else
+    stable=0
+    last_pid=
+  fi
   if [ "$stable" -ge 8 ]; then break; fi
 done
 [ "$stable" -ge 8 ] || die "No stable Caddy process after restart; automatic rollback"
