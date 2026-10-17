@@ -9,7 +9,7 @@ import (
 )
 
 func TestRecordAndPermissions(t *testing.T) {
-  dir := t.TempDir()
+  dir := filepath.Join(t.TempDir(), "audit")
   r, err := New(dir, 7, 4)
   if err != nil { t.Fatal(err) }
   r.Record(Event{UserID:12, Target:"ExAmPle.COM.", Port:443, Network:"tcp"})
@@ -30,7 +30,7 @@ func TestRecordAndPermissions(t *testing.T) {
 }
 
 func TestCleanupAndSensitiveInput(t *testing.T) {
-  dir:=t.TempDir()
+  dir:=filepath.Join(t.TempDir(), "audit")
   r,err:=New(dir,7,0)
   if err!=nil { t.Fatal(err) }
   old:=filepath.Join(dir,"audit-2020-01-01.jsonl")
@@ -42,4 +42,18 @@ func TestCleanupAndSensitiveInput(t *testing.T) {
   if _,err:=os.Stat(keep); err!=nil { t.Fatal("unrelated file removed") }
   r.Record(Event{UserID:12,Target:"example.org/page?token=sensitive",Network:"tcp"})
   if len(r.events)!=0 { t.Fatal("sensitive target entered queue") }
+}
+
+// TestRejectInsecureDirectory makes sure the security guard stays active.
+func TestRejectInsecureDirectory(t *testing.T) {
+    dir := filepath.Join(t.TempDir(), "public-audit")
+    if err := os.Mkdir(dir, 0755); err != nil {
+        t.Fatal(err)
+    }
+    if err := os.Chmod(dir, 0755); err != nil {
+        t.Fatal(err)
+    }
+    if _, err := New(dir, 7, 0); err == nil {
+        t.Fatal("audit must reject a directory accessible by other users")
+    }
 }
