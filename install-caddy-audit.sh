@@ -90,6 +90,10 @@ rollback(){
    msg "Installation interrupted/failed; restoring prior Caddy from $BACKUP"
    if install -m 755 "$BACKUP/caddy" "$WORK/caddy.rollback"; then
      mv -f "$WORK/caddy.rollback" "$BIN" || true
+     if [ "$ENABLE_AUDIT" -eq 1 ] && [ -f "$BACKUP/credentials.env" ]; then
+       cp "$BACKUP/credentials.env" "$ENVFILE" || true
+       chmod 600 "$ENVFILE" || true
+     fi
      restart_service || msg "WARNING: rollback service restart failed"
    fi
  fi
