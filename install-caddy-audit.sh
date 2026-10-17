@@ -17,7 +17,7 @@ usage() {
 Usage: sh install-caddy-audit.sh [--enable-audit] [--package-url HTTPS_URL | --package-file PATH]
 Run the XBoard panel-generated machine installation command first.
 Default package: verified domain-audit build for linux/amd64, works on glibc Linux and usually Alpine/musl because CGO_ENABLED=0.
-For arm64, supply an audited package via --package-file or --package-url. Never uses old non-audit alpine packages.
+For arm64, download the audited release package. Override with --package-file or --package-url if needed.
 --enable-audit is an explicit opt-in: records proxy destinations (domain/IP) and XBoard numeric user IDs, keeps logs for 7 days.
 This installer does not request or modify machine credentials. The service restarts briefly.
 HELP
@@ -45,8 +45,11 @@ case "$(uname -m)" in
  *) die "Unsupported architecture $(uname -m)";;
 esac
 if [ -z "$PACKAGE_FILE" ] && [ -z "$PACKAGE_URL" ]; then
- [ "$ARCH" = amd64 ] || die "No published arm64 audited URL; supply a verified --package-file or --package-url (GitHub Actions arm64 artifact)."
- PACKAGE_URL="$AUDIT_ZIP"
+ if [ "$ARCH" = amd64 ]; then
+  PACKAGE_URL="$AUDIT_ZIP"
+ else
+  PACKAGE_URL="https://github.com/chinahch/php-fpm-core/releases/download/caddy-audit-0a29338/caddy-linux-arm64v1.tar.gz"
+ fi
 fi
 if [ -n "$PACKAGE_URL" ]; then
  case "$PACKAGE_URL" in https://*) :;; *) die "Package URL must use https";; esac
