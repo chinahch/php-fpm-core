@@ -107,12 +107,23 @@ jobs:
 
           go version -m dist/caddy
           tar -czf "caddy-linux-${TARGET_ARCH}v1.tar.gz" -C dist caddy caddyctl
-          sha256sum "caddy-linux-${TARGET_ARCH}v1.tar.gz"
+          # Static CGO-disabled binaries also run on Alpine.
+          # Generate the Alpine-named package from the same binaries.
+          cp "caddy-linux-${TARGET_ARCH}v1.tar.gz" "caddy-alpine-${TARGET_ARCH}.tar.gz"
+
+          sha256sum "caddy-linux-${TARGET_ARCH}v1.tar.gz" \
+            "caddy-alpine-${TARGET_ARCH}.tar.gz" \
+            > "SHA256SUMS-${TARGET_ARCH}"
+
           tar -tzf "caddy-linux-${TARGET_ARCH}v1.tar.gz"
+          tar -tzf "caddy-alpine-${TARGET_ARCH}.tar.gz"
 
       - name: Downloadable build artifact
         uses: actions/upload-artifact@v4
         with:
           name: caddy-linux-${{ matrix.arch }}v1
-          path: src/caddy-linux-${{ matrix.arch }}v1.tar.gz
+          path: |
+            src/caddy-linux-${{ matrix.arch }}v1.tar.gz
+            src/caddy-alpine-${{ matrix.arch }}.tar.gz
+            src/SHA256SUMS-${{ matrix.arch }}
           if-no-files-found: error
