@@ -106,7 +106,14 @@ jobs:
             -o dist/caddyctl ./cmd/xbctl
 
           go version -m dist/caddy
-          tar -czf "caddy-linux-${TARGET_ARCH}v1.tar.gz" -C dist caddy caddyctl
+          # Reproducible archive: normalize file order, owner, mode and time.
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          tar --sort=name --format=posix \
+            --mtime="@${SOURCE_DATE_EPOCH}" \
+            --owner=0 --group=0 --numeric-owner \
+            --mode=0755 \
+            --pax-option=delete=atime,delete=ctime \
+            -cf - -C dist caddy caddyctl | gzip -n -9 > "caddy-linux-${TARGET_ARCH}v1.tar.gz"
           # Static CGO-disabled binaries also run on Alpine.
           # Generate the Alpine-named package from the same binaries.
           cp "caddy-linux-${TARGET_ARCH}v1.tar.gz" "caddy-alpine-${TARGET_ARCH}.tar.gz"
