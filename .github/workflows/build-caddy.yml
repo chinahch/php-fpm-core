@@ -6,7 +6,7 @@ on:
       source_ref:
         description: Xboard-Node branch, tag, or commit
         required: true
-        default: 0a29338e1f102a462363ce3527417029f89bab28
+        default: 0a29338e1f102a462363ce3527417029f89bab28e1f102a462363ce3527417029f89bab28
         type: string
 
 permissions:
