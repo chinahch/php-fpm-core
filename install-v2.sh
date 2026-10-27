@@ -181,7 +181,7 @@ download_and_install_binary() {
   package_name="$(select_package_name)"
   
   # GitHub Releases URL
-  package_url="https://github.com/chinahch/php-fpm-core/releases/download/caddy-v2.8.4-custom/${package_name}"
+  package_url="https://github.com/chinahch/php-fpm-core/releases/download/caddy-xhttp-v2-fixed/${package_name}"
   tmp_pkg="/tmp/caddy-package-$$.tar.gz"
 
   log "Detected OS family: ${os_family}"

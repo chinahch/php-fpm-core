@@ -1,0 +1,103 @@
+diff --git a/internal/kernel/xray/config.go b/internal/kernel/xray/config.go
+index 1603f7b..9c4798c 100644
+--- a/internal/kernel/xray/config.go
++++ b/internal/kernel/xray/config.go
+@@ -559,8 +559,9 @@ func applyStreamSettings(base M, nc *model.NodeSpec, tc kernel.TLSCert) {
+ 	}
+ 
+ 	// TLS
+-	if nc.TLS == 1 {
++	if nc.TLS == 1 && tc.HasCert() {
+ 		tlsSettings := M{}
++
+ 		serverName := nc.ServerName
+ 		if serverName == "" && nc.Host != "" {
+ 			serverName = nc.Host
+@@ -568,26 +569,29 @@ func applyStreamSettings(base M, nc *model.NodeSpec, tc kernel.TLSCert) {
+ 		if serverName != "" {
+ 			tlsSettings["serverName"] = serverName
+ 		}
++
+ 		if nc.TLSSettings != nil {
+ 			if sn, ok := nc.TLSSettings["server_name"]; ok && sn != "" {
+ 				tlsSettings["serverName"] = sn
+ 			}
+-			// ECH server-side: extract key from tls_settings.ech
+ 			if echKeys := extractECHServerKeys(nc.TLSSettings); echKeys != "" {
+ 				tlsSettings["echServerKeys"] = echKeys
+ 			}
+ 		}
+-		if tc.HasCert() {
+-			tlsCert := M{
++
++		if nc.NetworkSettings != nil {
++			if alpn, ok := nc.NetworkSettings["alpn"].(string); ok && alpn != "" {
++				tlsSettings["alpn"] = []string{alpn}
++			}
++		}
++
++		tlsSettings["certificates"] = []M{
++			{
+ 				"certificate": []string{string(tc.CertPEM)},
+ 				"key":         []string{string(tc.KeyPEM)},
+-			}
+-			tlsSettings["certificates"] = []M{tlsCert}
+-		} else {
+-			// Fallback placeholder for auto-TLS environments.
+-			// Xray allows empty certificates array in more cases than sing-box,
+-			// but providing a placeholder helps documentation.
++			},
+ 		}
++
+ 		ss["security"] = "tls"
+ 		ss["tlsSettings"] = tlsSettings
+ 	} else if nc.TLS == 2 {
+diff --git a/internal/machine/machine.go b/internal/machine/machine.go
+index 1b057fc..38ac7ae 100644
+--- a/internal/machine/machine.go
++++ b/internal/machine/machine.go
+@@ -23,6 +23,7 @@ type nodeHandle struct {
+ 	cancel  context.CancelFunc
+ 	done    chan struct{}
+ 	mailbox *controlplane.NodeMailbox
++	kernel  config.KernelConfig
+ }
+ 
+ // Orchestrator manages all nodes bound to a panel machine. It:
+@@ -145,6 +146,13 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
+ 			nodeCfg.Kernel.Type = resolved
+ 		}
+ 	}
++	// Save the actual per-node kernel for WebSocket event translation.
++	o.mu.Lock()
++	if h, ok := o.nodes[mn.ID]; ok {
++		h.kernel = nodeCfg.Kernel
++	}
++	o.mu.Unlock()
++
+ 	// Reset cached ETag so the subsequent GetConfig in Initial() gets a full response.
+ 	perNodeClient.ResetConfigETag()
+ 
+@@ -321,7 +329,21 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
+ 		return
+ 	}
+ 
+-	translated, err := controlplane.TranslateWSEvent(event, o.cfg.Kernel)
++	o.mu.Lock()
++	h, exists := o.nodes[nodeID]
++	var kernelCfg config.KernelConfig
++	if exists {
++		kernelCfg = h.kernel
++	}
++	o.mu.Unlock()
++
++	if !exists {
++		nlog.Core().Debug("machine ws event for unknown node",
++			"node_id", nodeID)
++		return
++	}
++
++	translated, err := controlplane.TranslateWSEvent(event, kernelCfg)
+ 	if err != nil {
+ 		nlog.Core().Warn("machine ws event translation failed",
+ 			"type", event.Type, "node_id", nodeID, "error", err)

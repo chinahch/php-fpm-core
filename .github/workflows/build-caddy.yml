@@ -6,7 +6,7 @@ on:
       source_ref:
         description: Xboard-Node branch, tag, or commit
         required: true
-        default: dev
+        default: 0a29338e1f102a462363ce3527417029f89bab28
         type: string
 
 permissions:
@@ -29,6 +29,20 @@ jobs:
           ref: ${{ inputs.source_ref }}
           path: src
 
+      - name: Check out local fixes
+        uses: actions/checkout@v4
+        with:
+          path: patchrepo
+
+      - name: Apply XHTTP fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src
+          git apply --check ../patchrepo/patches/xhttp-v2-fixes.patch
+          git apply ../patchrepo/patches/xhttp-v2-fixes.patch
+          cp ../patchrepo/patches/xhttp_tls_v2_test.go internal/kernel/xray/
+
       - name: Install Go version required by source
         uses: actions/setup-go@v5
         with:
@@ -42,6 +56,10 @@ jobs:
         run: |
           set -euo pipefail
           cd src
+
+          if [ "${{ matrix.arch }}" = amd64 ]; then
+            go test ./internal/kernel/xray/... ./internal/machine/... ./internal/controlplane/...
+          fi
 
           # The upstream CLI uses /etc/xboard-node and xboard-node.service.
           # Point those CLI defaults to this repository's caddy installer paths.
