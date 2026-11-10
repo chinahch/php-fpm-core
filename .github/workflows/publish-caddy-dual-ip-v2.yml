@@ -1,6 +1,12 @@
 name: Publish verified Caddy dual-ip-v2 release
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'install-v2.sh'
+      - '.github/workflows/publish-caddy-dual-ip-v2.yml'
   workflow_dispatch:
     inputs:
       build_run_id:
