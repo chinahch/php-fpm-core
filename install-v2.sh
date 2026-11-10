@@ -213,7 +213,9 @@ download_and_install_binary() {
     err "Download failed; service has not been touched."
     exit 1
   fi
-  if ! tar -tzf "$tmp_pkg" | grep -qx caddy || ! tar -tzf "$tmp_pkg" | grep -qx caddyctl; then
+  if ! tar -tzf "$tmp_pkg" > "$tmp_dir/archive-list.txt" ||
+     ! grep -qx caddy "$tmp_dir/archive-list.txt" ||
+     ! grep -qx caddyctl "$tmp_dir/archive-list.txt"; then
     rm -rf "$tmp_dir"
     err "Invalid package: missing caddy/caddyctl"
     exit 1
