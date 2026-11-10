@@ -1,0 +1,25 @@
+name: Validate Caddy installer v2
+on:
+  pull_request:
+    paths:
+      - 'install-v2.sh'
+      - 'tests/test-install-v2.sh'
+      - '.github/workflows/test-install-v2.yml'
+  push:
+    branches:
+      - 'fix/install-v2-preserve-dual-ip'
+    paths:
+      - 'install-v2.sh'
+      - 'tests/test-install-v2.sh'
+      - '.github/workflows/test-install-v2.yml'
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: bash -n install-v2.sh && bash -n tests/test-install-v2.sh
+      - name: Guard existing Machine and validate fresh candidate
+        run: bash tests/test-install-v2.sh
