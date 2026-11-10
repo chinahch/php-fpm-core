@@ -52,8 +52,9 @@ jobs:
             test -s "$linux"
             test -s "$alpine"
             for archive in "$linux" "$alpine"; do
-              tar -tzf "$archive" | grep -qx caddy
-              tar -tzf "$archive" | grep -qx caddyctl
+              tar -tzf "$archive" > /tmp/caddy-archive-contents.txt
+              grep -qx caddy /tmp/caddy-archive-contents.txt
+              grep -qx caddyctl /tmp/caddy-archive-contents.txt
             done
             # Source workflow produces identical content in the Linux/Alpine archives.
             cmp "$linux" "$alpine"
