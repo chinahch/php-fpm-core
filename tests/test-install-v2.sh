@@ -75,6 +75,8 @@ fi
 "$BINARY_PATH" -v | grep -Fq dual-ip-v2
 
 # Existing v1/dev Machine: same panel command upgrades safely without touching YAML/credentials.
+cp "$tmp/config-before" "$CONFIG_FILE"
+cp "$tmp/credentials-before" "$CREDENTIALS_FILE"
 rm -f "$BINARY_PATH" "$CLI_PATH"
 mkdir -p "$tmp/service"
 SYSTEMD_SERVICE_PATH="$tmp/service/caddy.service"
