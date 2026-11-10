@@ -1,4 +1,4 @@
-name: Build custom Xboard Caddy binaries (dual IP family)
+name: Build custom Xboard Caddy binaries (dual IP family v2 strict)
 
 on:
   workflow_dispatch:
@@ -162,6 +162,15 @@ jobs:
           gofmt -w internal/config/config.go internal/machine/machine.go \
             internal/kernel/singbox/config.go internal/kernel/xray/config.go
 
+      - name: Apply strict address-family guard and regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd src
+          python3 ../patchrepo/patches/strict_ipfamily.py
+          gofmt -w internal/kernel/singbox/config.go internal/kernel/xray/config.go \
+            internal/kernel/singbox/ipfamily_native_test.go internal/kernel/xray/ipfamily_native_test.go
+
       - name: Install Go
         uses: actions/setup-go@v5
         with:
@@ -204,7 +213,7 @@ jobs:
           p.write_text(s.replace(old, new, 1))
           PY
 
-          VERSION="custom-$(git rev-parse --short HEAD)-dual-ip"
+          VERSION="custom-$(git rev-parse --short HEAD)-dual-ip-v2"
           BUILD_TIME="$(date -u -d "@$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
           export CGO_ENABLED=0 GOOS=linux GOARCH="$TARGET_ARCH"
           if [ "$TARGET_ARCH" = amd64 ]; then
@@ -239,7 +248,7 @@ jobs:
       - name: Downloadable build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: caddy-linux-${{ matrix.arch }}v1-dual-ip
+          name: caddy-linux-${{ matrix.arch }}v1-dual-ip-v2
           path: |
             src/caddy-linux-${{ matrix.arch }}v1.tar.gz
             src/caddy-alpine-${{ matrix.arch }}.tar.gz
