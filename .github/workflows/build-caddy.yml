@@ -1,4 +1,4 @@
-name: Build custom Xboard Caddy binaries (dual IP family)
+name: Build custom Xboard Caddy binaries
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       source_ref:
         description: Xboard-Node branch, tag, or commit
         required: true
-        default: 0a29338e1f102a462363ce3527417029f89bab28
+        default: 0a29338e1f102a462363ce3527417029f89bab28e1f102a462363ce3527417029f89bab28
         type: string
 
 permissions:
@@ -22,19 +22,19 @@ jobs:
         arch: [amd64, arm64]
 
     steps:
-      - name: Check out pinned upstream source
+      - name: Check out upstream Xboard-Node source
         uses: actions/checkout@v4
         with:
           repository: cedar2025/Xboard-Node
           ref: ${{ inputs.source_ref }}
           path: src
 
-      - name: Check out local XHTTP fixes
+      - name: Check out local fixes
         uses: actions/checkout@v4
         with:
           path: patchrepo
 
-      - name: Apply original XHTTP / TLS fixes
+      - name: Apply XHTTP fixes
         shell: bash
         run: |
           set -euo pipefail
@@ -43,168 +43,52 @@ jobs:
           git apply ../patchrepo/patches/xhttp-v2-fixes.patch
           cp ../patchrepo/patches/xhttp_tls_v2_test.go internal/kernel/xray/
 
-      - name: Add native per-core IPv4 / IPv6 policy support
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd src
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_once(path, old, new):
-              p = Path(path)
-              s = p.read_text()
-              if s.count(old) != 1:
-                  raise SystemExit(f'{path}: expected exactly one anchor, found {s.count(old)}: {old[:90]!r}')
-              p.write_text(s.replace(old, new, 1))
-
-          # A single Machine can host nodes with different actual kernels.
-          # Each core reads only its own setting, after its normal config merge.
-          p = 'internal/config/config.go'
-          replace_once(p,
-              '\tCustomConfig string `yaml:"custom_config"`',
-              '\tCustomConfig string `yaml:"custom_config"`\n'
-              '\tCustomConfigSingbox string `yaml:"custom_config_singbox,omitempty"`\n'
-              '\tCustomConfigXray string `yaml:"custom_config_xray,omitempty"`\n'
-              '\tIPFamily map[string]string `yaml:"ip_family,omitempty"`')
-
-          # After XHTTP auto-switch, choose the config file matching actual core.
-          p = 'internal/machine/machine.go'
-          replace_once(p,
-              '\t// Reset cached ETag so the subsequent GetConfig in Initial() gets a full response.',
-              '''\t// A Machine may host sing-box and Xray concurrently. Select the
-          \t// kernel-native custom config *after* transport auto-switching.
-          \tswitch nodeCfg.Kernel.Type {
-          \tcase "singbox":
-          \t\tif path := nodeCfg.Kernel.CustomConfigSingbox; path != "" {
-          \t\t\tnodeCfg.Kernel.CustomConfig = path
-          \t\t}
-          \tcase "xray":
-          \t\tif path := nodeCfg.Kernel.CustomConfigXray; path != "" {
-          \t\t\tnodeCfg.Kernel.CustomConfig = path
-          \t\t}
-          \t}
-          \t// Reset cached ETag so the subsequent GetConfig in Initial() gets a full response.''')
-
-          p = 'internal/kernel/singbox/config.go'
-          replace_once(p,
-              '\tmergeCustomSingbox(cfg, kcfg)\n\treturn cfg',
-              '\tmergeCustomSingbox(cfg, kcfg)\n\tapplyMachineIPFamily(cfg, kcfg)\n\treturn cfg')
-          with Path(p).open('a') as f:
-              f.write('''
-          // applyMachineIPFamily sets an address-family preference for DNS
-          // resolution. Existing panel rules remain after this non-final action.
-          func applyMachineIPFamily(cfg M, kcfg config.KernelConfig) {
-          \tstrategy := kcfg.IPFamily["singbox"]
-          \tswitch strategy {
-          \tcase "prefer_ipv6", "prefer_ipv4", "ipv6_only", "ipv4_only":
-          \tdefault:
-          \t\treturn
-          \t}
-          \troute, ok := cfg["route"].(M)
-          \tif !ok {
-          \t\treturn
-          \t}
-          \trule := M{"action": "resolve", "strategy": strategy}
-          \tif rules, ok := route["rules"].([]M); ok {
-          \t\troute["rules"] = append([]M{rule}, rules...)
-          \t} else if rules, ok := route["rules"].([]any); ok {
-          \t\troute["rules"] = append([]any{rule}, rules...)
-          \t} else {
-          \t\troute["rules"] = []M{rule}
-          \t}
-          }
-          ''')
-
-          p = 'internal/kernel/xray/config.go'
-          replace_once(p,
-              '\tmergeCustomXray(cfg, kcfg)\n\treturn cfg',
-              '\tmergeCustomXray(cfg, kcfg)\n\tapplyMachineIPFamily(cfg, kcfg)\n\treturn cfg')
-          with Path(p).open('a') as f:
-              f.write('''
-          // applyMachineIPFamily sets the address-family strategy on the
-          // existing default freedom outbound, without appending a duplicate.
-          func applyMachineIPFamily(cfg M, kcfg config.KernelConfig) {
-          \tstrategies := map[string]string{
-          \t\t"prefer_ipv6": "UseIPv6v4",
-          \t\t"prefer_ipv4": "UseIPv4v6",
-          \t\t"ipv6_only":   "ForceIPv6",
-          \t\t"ipv4_only":   "ForceIPv4",
-          \t}
-          \tstrategy, ok := strategies[kcfg.IPFamily["xray"]]
-          \tif !ok {
-          \t\treturn
-          \t}
-          \toutbounds, ok := cfg["outbounds"].([]M)
-          \tif !ok {
-          \t\treturn
-          \t}
-          \tfor _, outbound := range outbounds {
-          \t\tif outbound["tag"] != "direct" || outbound["protocol"] != "freedom" {
-          \t\t\tcontinue
-          \t\t}
-          \t\tstream, ok := outbound["streamSettings"].(M)
-          \t\tif !ok {
-          \t\t\tstream = M{}
-          \t\t\toutbound["streamSettings"] = stream
-          \t\t}
-          \t\tsockopt, ok := stream["sockopt"].(M)
-          \t\tif !ok {
-          \t\t\tsockopt = M{}
-          \t\t\tstream["sockopt"] = sockopt
-          \t\t}
-          \t\tsockopt["domainStrategy"] = strategy
-          \t\treturn
-          \t}
-          }
-          ''')
-          PY
-          gofmt -w internal/config/config.go internal/machine/machine.go \
-            internal/kernel/singbox/config.go internal/kernel/xray/config.go
-
-      - name: Install Go
+      - name: Install Go version required by source
         uses: actions/setup-go@v5
         with:
           go-version: '1.26.10'
           cache-dependency-path: src/go.sum
 
-      - name: Test original and modified modules
-        if: matrix.arch == 'amd64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd src
-          go test ./internal/config/... ./internal/kernel/singbox/... \
-            ./internal/kernel/xray/... ./internal/machine/... ./internal/controlplane/...
-
-      - name: Compile Caddy and caddyctl
+      - name: Compile Caddy-named binaries and create package
         shell: bash
         env:
           TARGET_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           cd src
+
+          if [ "${{ matrix.arch }}" = amd64 ]; then
+            go test ./internal/kernel/xray/... ./internal/machine/... ./internal/controlplane/...
+          fi
+
+          # The upstream CLI uses /etc/xboard-node and xboard-node.service.
+          # Point those CLI defaults to this repository's caddy installer paths.
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('cmd/xbctl/main.go')
-          s = p.read_text()
-          for old, new in {
+          file = Path('cmd/xbctl/main.go')
+          src = file.read_text()
+          replacements = {
               '/etc/xboard-node': '/etc/caddy',
               '/usr/local/bin/xboard-node': '/usr/local/bin/caddy',
               '/usr/local/bin/xbctl': '/usr/local/bin/caddyctl',
               'xboard-node.service': 'caddy.service',
-          }.items():
-              if old not in s:
+          }
+          for old, new in replacements.items():
+              if old not in src:
                   raise SystemExit(f'Expected CLI default not found: {old}')
-              s = s.replace(old, new)
+              src = src.replace(old, new)
+
+          # Upstream upgrade downloads upstream-named binaries. Disable it so
+          # caddyctl cannot silently replace the custom-built caddy binary.
           old = 'case "upgrade":\n\t\treturn runUpgrade(args[1:])'
           new = 'case "upgrade":\n\t\treturn fmt.Errorf("custom caddy build: use a tested custom package instead of upgrade")'
-          if old not in s:
+          if old not in src:
               raise SystemExit('Expected CLI upgrade handler not found')
-          p.write_text(s.replace(old, new, 1))
+          src = src.replace(old, new, 1)
+          file.write_text(src)
           PY
 
-          VERSION="custom-$(git rev-parse --short HEAD)-dual-ip"
+          VERSION="custom-$(git rev-parse --short HEAD)"
           BUILD_TIME="$(date -u -d "@$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
           export CGO_ENABLED=0 GOOS=linux GOARCH="$TARGET_ARCH"
           if [ "$TARGET_ARCH" = amd64 ]; then
@@ -222,6 +106,7 @@ jobs:
             -o dist/caddyctl ./cmd/xbctl
 
           go version -m dist/caddy
+          # Reproducible archive: normalize file order, owner, mode and time.
           SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
           tar --sort=name --format=posix \
             --mtime="@${SOURCE_DATE_EPOCH}" \
@@ -229,17 +114,21 @@ jobs:
             --mode=0755 \
             --pax-option=delete=atime,delete=ctime \
             -cf - -C dist caddy caddyctl | gzip -n -9 > "caddy-linux-${TARGET_ARCH}v1.tar.gz"
+          # Static CGO-disabled binaries also run on Alpine.
+          # Generate the Alpine-named package from the same binaries.
           cp "caddy-linux-${TARGET_ARCH}v1.tar.gz" "caddy-alpine-${TARGET_ARCH}.tar.gz"
+
           sha256sum "caddy-linux-${TARGET_ARCH}v1.tar.gz" \
             "caddy-alpine-${TARGET_ARCH}.tar.gz" \
             > "SHA256SUMS-${TARGET_ARCH}"
+
           tar -tzf "caddy-linux-${TARGET_ARCH}v1.tar.gz"
           tar -tzf "caddy-alpine-${TARGET_ARCH}.tar.gz"
 
       - name: Downloadable build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: caddy-linux-${{ matrix.arch }}v1-dual-ip
+          name: caddy-linux-${{ matrix.arch }}v1
           path: |
             src/caddy-linux-${{ matrix.arch }}v1.tar.gz
             src/caddy-alpine-${{ matrix.arch }}.tar.gz
