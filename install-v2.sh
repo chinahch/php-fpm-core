@@ -185,7 +185,7 @@ upgrade_existing_machine() {
   url="https://github.com/chinahch/php-fpm-core/releases/download/${CADDY_RELEASE_TAG}/${pkg_name}"
   [ -z "$CADDY_PACKAGE_URL" ] || url="$CADDY_PACKAGE_URL"
   work="$(mktemp -d)"
-  backup="${CADDY_BACKUP_ROOT:-/root}/caddy-machine-${MACHINE_ID}-upgrade-$(date +%Y%m%d-%H%M%S)-$"
+  backup="${CADDY_BACKUP_ROOT:-/root}/caddy-machine-${MACHINE_ID}-upgrade-$(date +%Y%m%d-%H%M%S)-$$"
   mkdir -m 700 -p "$backup"
   log "Staging upgrade candidate: $url"
   if ! curl -fsSL --retry 2 "$url" -o "$work/package.tar.gz"; then
