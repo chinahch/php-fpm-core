@@ -165,10 +165,124 @@ preserve_existing_install() {
     err "Existing Machine ID differs from requested ID ${MACHINE_ID}; refusing overwrite."
     exit 1
   fi
-  log "Machine ${MACHINE_ID} already installed; leaving Caddy, ip_family, credentials and service untouched."
-  warn "Provided token was NOT applied; if panel token changed, use a separate migration procedure."
-  "$BINARY_PATH" -v || true
+  local current_version
+  current_version="$("$BINARY_PATH" -v 2>&1 || true)"
+  if [[ "$current_version" == *"$CADDY_REQUIRED_VERSION"* ]]; then
+    log "Machine ${MACHINE_ID} already runs $current_version; no upgrade needed."
+    warn "Panel token was NOT changed; update it separately if rotated."
+    return 0
+  fi
+  log "Machine ${MACHINE_ID} runs older build: $current_version"
+  upgrade_existing_machine
   return 0
+ }
+
+# Upgrade existing Machine without regenerating config, credential files or units.
+# Only the running binary pair is replaced after a complete staged download.
+upgrade_existing_machine() {
+  local pkg_name url work backup current new_version
+  pkg_name="$(select_package_name)"
+  url="https://github.com/chinahch/php-fpm-core/releases/download/${CADDY_RELEASE_TAG}/${pkg_name}"
+  [ -z "$CADDY_PACKAGE_URL" ] || url="$CADDY_PACKAGE_URL"
+  work="$(mktemp -d)"
+  backup="/root/caddy-machine-${MACHINE_ID}-upgrade-$(date +%Y%m%d-%H%M%S)"
+  mkdir -m 700 -p "$backup"
+  log "Staging upgrade candidate: $url"
+  if ! curl -fsSL --retry 2 "$url" -o "$work/package.tar.gz"; then
+    rm -rf "$work"
+    err "Download failed; existing Machine untouched."
+    exit 1
+  fi
+  if ! tar -tzf "$work/package.tar.gz" > "$work/list" ||
+     ! grep -qx caddy "$work/list" ||
+     ! grep -qx caddyctl "$work/list" ||
+     ! tar -xzO -f "$work/package.tar.gz" caddy > "$work/caddy" ||
+     ! tar -xzO -f "$work/package.tar.gz" caddyctl > "$work/caddyctl"; then
+    rm -rf "$work"
+    err "Package invalid; existing Machine untouched."
+    exit 1
+  fi
+  chmod 755 "$work/caddy" "$work/caddyctl"
+  new_version="$("$work/caddy" -v 2>&1 || true)"
+  if [[ "$new_version" != *"$CADDY_REQUIRED_VERSION"* ]]; then
+    rm -rf "$work"
+    err "Candidate version mismatch: $new_version"
+    exit 1
+  fi
+  # Existing installation must have a running service for safe automated upgrade.
+  local service_type
+  if [ -f "$SYSTEMD_SERVICE_PATH" ] && command -v systemctl >/dev/null 2>&1 &&
+     systemctl is-active --quiet "$SYSTEMD_SERVICE_NAME"; then
+    service_type=systemd
+  elif [ -f "$OPENRC_SERVICE_PATH" ] && command -v rc-service >/dev/null 2>&1 &&
+       rc-service "$OPENRC_SERVICE_NAME" status >/dev/null 2>&1; then
+    service_type=openrc
+  else
+    rm -rf "$work"
+    err "Existing service not active or unknown manager; manual review needed."
+    exit 1
+  fi
+  cp -a "$BINARY_PATH" "$backup/caddy"
+  cp -a "$CLI_PATH" "$backup/caddyctl"
+  cp -a "$CONFIG_FILE" "$backup/config.yml"
+  cp -a "$CREDENTIALS_FILE" "$backup/credentials.env"
+  [ ! -e "$META_FILE" ] || cp -a "$META_FILE" "$backup/install-meta.json"
+  if [ "$service_type" = systemd ]; then
+    cp -a "$SYSTEMD_SERVICE_PATH" "$backup/service"
+  else
+    cp -a "$OPENRC_SERVICE_PATH" "$backup/service"
+  fi
+  chmod 700 "$backup"
+  log "Saved rollback snapshot: $backup"
+  local rollback_needed=0
+  if [ "$service_type" = systemd ]; then
+    systemctl stop "$SYSTEMD_SERVICE_NAME" || { err "Stop failed; existing files untouched"; rm -rf "$work"; exit 1; }
+  else
+    rc-service "$OPENRC_SERVICE_NAME" stop || { err "Stop failed; existing files untouched"; rm -rf "$work"; exit 1; }
+  fi
+  rollback_needed=1
+  if ! install -m 755 "$work/caddy" "$BINARY_PATH" ||
+     ! install -m 755 "$work/caddyctl" "$CLI_PATH"; then
+    warn "Binary replacement failed; rolling back."
+  else
+    if [ "$service_type" = systemd ]; then
+      systemctl start "$SYSTEMD_SERVICE_NAME" || true
+    else
+      rc-service "$OPENRC_SERVICE_NAME" start || true
+    fi
+    # A healthy instance must belong to the requested Machine, not merely have an open port.
+    local attempt line
+    for attempt in $(seq 1 30); do
+      if [ "$service_type" = systemd ]; then
+        systemctl is-active --quiet "$SYSTEMD_SERVICE_NAME" || { sleep 1; continue; }
+      else
+        rc-service "$OPENRC_SERVICE_NAME" status >/dev/null 2>&1 || { sleep 1; continue; }
+      fi
+      line="$("$CLI_PATH" instance list --output text 2>/dev/null | grep -E "machine_id=${MACHINE_ID}[[:space:]]" || true)"
+      if [ -n "$line" ] && [[ "$line" =~ [[:space:]]ok[[:space:]]*$ ]]; then
+        rollback_needed=0
+        break
+      fi
+      sleep 1
+    done
+  fi
+  if [ "$rollback_needed" -ne 0 ]; then
+    err "New Caddy not healthy, restoring previous binaries and main configuration."
+    if [ "$service_type" = systemd ]; then systemctl stop "$SYSTEMD_SERVICE_NAME" || true
+    else rc-service "$OPENRC_SERVICE_NAME" stop || true; fi
+    cp -a "$backup/caddy" "$BINARY_PATH" || true
+    cp -a "$backup/caddyctl" "$CLI_PATH" || true
+    cp -a "$backup/config.yml" "$CONFIG_FILE" || true
+    if [ "$service_type" = systemd ]; then systemctl start "$SYSTEMD_SERVICE_NAME" || true
+    else rc-service "$OPENRC_SERVICE_NAME" start || true; fi
+    rm -rf "$work"
+    err "Rollback attempted. Check service health manually. Backup: $backup"
+    exit 1
+  fi
+  log "Upgrade successful: $new_version"
+  log "Existing Machine ${MACHINE_ID}, credentials, and ip_family preserved; backup: $backup"
+  warn "Panel token was NOT applied during upgrade; update it separately if changed."
+  rm -rf "$work"
 }
 
 cleanup_old_install() {
