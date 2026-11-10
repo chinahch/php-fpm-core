@@ -121,7 +121,7 @@ cmp "$CREDENTIALS_FILE" "$tmp/creds-expected"
 printf '%s\n' '#!/bin/sh' 'echo "xboard-node dev (built unknown)"' > "$BINARY_PATH"
 printf '%s\n' '#!/bin/sh' 'echo "old cli"' > "$CLI_PATH"
 chmod +x "$BINARY_PATH" "$CLI_PATH"
-if ( MOCK_FAIL_HEALTH=1; upgrade_existing_machine ) >/dev/null 2>&1; then
+if ( export MOCK_FAIL_HEALTH=1; upgrade_existing_machine ) >/dev/null 2>&1; then
   echo "FAIL: failed health check did not reject upgrade" >&2
   exit 1
 fi
