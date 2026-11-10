@@ -1,0 +1,79 @@
+name: Publish verified Caddy dual-ip-v2 release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful dual-ip-v2 build run to publish
+        required: true
+        default: '42766641128'
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify source workflow run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.build_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo 'Invalid run id'; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > /tmp/build-run.json
+          jq -e '.conclusion == "success" and .head_branch == "fix/dual-ipfamily-strict-v2" and .head_sha == "2a5ae50eed9bb400995601293a4ebd484920b0fd"' /tmp/build-run.json
+          echo "Confirmed successful pinned dual-ip-v2 build run: $RUN_ID"
+
+      - name: Download both architectures from successful build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.build_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle/amd64 bundle/arm64 release
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" -n caddy-linux-amd64v1-dual-ip-v2 -D bundle/amd64
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" -n caddy-linux-arm64v1-dual-ip-v2 -D bundle/arm64
+          for arch in amd64 arm64; do
+            dir="bundle/$arch"
+            linux="$dir/caddy-linux-${arch}v1.tar.gz"
+            alpine="$dir/caddy-alpine-${arch}.tar.gz"
+            test -s "$linux"
+            test -s "$alpine"
+            for archive in "$linux" "$alpine"; do
+              tar -tzf "$archive" | grep -qx caddy
+              tar -tzf "$archive" | grep -qx caddyctl
+            done
+            # Source workflow produces identical content in the Linux/Alpine archives.
+            cmp "$linux" "$alpine"
+            cp "$linux" "release/caddy-linux-${arch}v1.tar.gz"
+            cp "$alpine" "release/caddy-alpine-${arch}.tar.gz"
+          done
+          tar -xzO -f release/caddy-alpine-amd64.tar.gz caddy > /tmp/caddy-candidate
+          chmod +x /tmp/caddy-candidate
+          /tmp/caddy-candidate -v | tee /tmp/caddy-version
+          grep -Fq dual-ip-v2 /tmp/caddy-version
+          (cd release && sha256sum *.tar.gz > SHA256SUMS)
+          ls -lh release
+
+      - name: Publish new versioned release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag='caddy-dual-ip-v2'
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists: refusing to overwrite assets"
+            exit 1
+          fi
+          gh release create "$tag" release/*.tar.gz release/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --target 2a5ae50eed9bb400995601293a4ebd484920b0fd \
+            --title 'Caddy XBoard dual kernel IP family v2' \
+            --notes 'Verified XHTTP dual-kernel build with native per-core IPv4/IPv6 selection and strict opposite-family guards. Built from pinned Xboard-Node 0a29338; run 42766641128. For fresh installs. Preserve working nodes on reinstall.'
