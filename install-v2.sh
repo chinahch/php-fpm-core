@@ -28,6 +28,9 @@ UNINSTALL_SCRIPT_LINK="/usr/local/bin/Install-uninstall"
 DEFAULT_HEALTH_PORT="65530"
 DEFAULT_KERNEL="singbox"
 DOWNLOAD_BASE="https://raw.githubusercontent.com/chinahch/php-fpm-core/main"
+CADDY_RELEASE_TAG="${CADDY_RELEASE_TAG:-caddy-dual-ip-v2}"
+CADDY_PACKAGE_URL="${CADDY_PACKAGE_URL:-}"
+CADDY_REQUIRED_VERSION="${CADDY_REQUIRED_VERSION:-dual-ip-v2}"
 
 MODE=""
 PANEL_URL=""
@@ -145,6 +148,29 @@ validate_args() {
   return 0
 }
 
+# Never overwrite working Caddy and its Machine credentials on repeat install.
+preserve_existing_install() {
+  if [ ! -e "$BINARY_PATH" ] && [ ! -e "$CONFIG_FILE" ] && [ ! -e "$CREDENTIALS_FILE" ]; then
+    return 1
+  fi
+  if [ ! -x "$BINARY_PATH" ] || [ ! -f "$CONFIG_FILE" ] || [ ! -f "$CREDENTIALS_FILE" ]; then
+    err "Partial Caddy installation found; refusing destructive reinstall."
+    exit 1
+  fi
+  if [ "$MODE" != "machine" ]; then
+    err "Existing node installation detected; refusing automatic overwrite."
+    exit 1
+  fi
+  if ! grep -Eq "^[[:space:]]*machine_id:[[:space:]]*['\"]?${MACHINE_ID}(['\"])?[[:space:]]*$" "$CONFIG_FILE"; then
+    err "Existing Machine ID differs from requested ID ${MACHINE_ID}; refusing overwrite."
+    exit 1
+  fi
+  log "Machine ${MACHINE_ID} already installed; leaving Caddy, ip_family, credentials and service untouched."
+  warn "Provided token was NOT applied; if panel token changed, use a separate migration procedure."
+  "$BINARY_PATH" -v || true
+  return 0
+}
+
 cleanup_old_install() {
   log "Cleaning old service/runtime leftovers..."
 
@@ -175,37 +201,43 @@ cleanup_old_install() {
 }
 
 download_and_install_binary() {
-  local arch os_family package_name package_url tmp_pkg
-  arch="$(detect_arch)"
-  os_family="$(detect_os_family)"
+  local package_name package_url tmp_pkg tmp_dir observed
   package_name="$(select_package_name)"
-  
-  # GitHub Releases URL
-  package_url="https://github.com/chinahch/php-fpm-core/releases/download/caddy-xhttp-v2-fixed/${package_name}"
-  tmp_pkg="/tmp/caddy-package-$$.tar.gz"
-
-  log "Detected OS family: ${os_family}"
-  log "Detected architecture: ${arch}"
-  log "Selected package: ${package_name}"
-  log "Downloading package from GitHub: ${package_url}"
-
-  rm -f "$tmp_pkg" "${BINARY_PATH}.new" "${CLI_PATH}.new"
-
-  curl -fsSL "$package_url" -o "$tmp_pkg" || { err "Failed to download package"; exit 1; }
-
-  log "Extracting caddy..."
-  tar -xzO -f "$tmp_pkg" caddy > "${BINARY_PATH}.new" || { err "Failed to extract caddy"; exit 1; }
-  chmod 755 "${BINARY_PATH}.new"
-  mv -f "${BINARY_PATH}.new" "$BINARY_PATH"
-
-  log "Extracting caddyctl..."
-  tar -xzO -f "$tmp_pkg" caddyctl > "${CLI_PATH}.new" || { err "Failed to extract caddyctl"; exit 1; }
-  chmod 755 "${CLI_PATH}.new"
-  mv -f "${CLI_PATH}.new" "$CLI_PATH"
+  package_url="https://github.com/chinahch/php-fpm-core/releases/download/${CADDY_RELEASE_TAG}/${package_name}"
+  [ -z "$CADDY_PACKAGE_URL" ] || package_url="$CADDY_PACKAGE_URL"
+  tmp_dir="$(mktemp -d)"
+  tmp_pkg="${tmp_dir}/package.tar.gz"
+  log "Downloading candidate: $package_url"
+  if ! curl -fsSL --retry 2 "$package_url" -o "$tmp_pkg"; then
+    rm -rf "$tmp_dir"
+    err "Download failed; service has not been touched."
+    exit 1
+  fi
+  if ! tar -tzf "$tmp_pkg" | grep -qx caddy || ! tar -tzf "$tmp_pkg" | grep -qx caddyctl; then
+    rm -rf "$tmp_dir"
+    err "Invalid package: missing caddy/caddyctl"
+    exit 1
+  fi
+  if ! tar -xzO -f "$tmp_pkg" caddy > "$tmp_dir/caddy" ||
+     ! tar -xzO -f "$tmp_pkg" caddyctl > "$tmp_dir/caddyctl"; then
+    rm -rf "$tmp_dir"
+    err "Archive extraction failed"
+    exit 1
+  fi
+  chmod 755 "$tmp_dir/caddy" "$tmp_dir/caddyctl"
+  if ! observed="$("$tmp_dir/caddy" -v 2>&1)" ||
+     ! printf '%s' "$observed" | grep -Fq "$CADDY_REQUIRED_VERSION"; then
+    rm -rf "$tmp_dir"
+    err "Candidate is not required version ($CADDY_REQUIRED_VERSION); refusing install."
+    exit 1
+  fi
+  log "Validated candidate: $observed"
+  mkdir -p "$(dirname "$BINARY_PATH")" "$(dirname "$CLI_PATH")"
+  install -m 755 "$tmp_dir/caddy" "$BINARY_PATH"
+  install -m 755 "$tmp_dir/caddyctl" "$CLI_PATH"
   ln -sf "$CLI_PATH" /usr/bin/caddyctl 2>/dev/null || true
-
-  rm -f "$tmp_pkg"
-  log "Caddy binaries installed successfully!"
+  rm -rf "$tmp_dir"
+  log "Validated custom Caddy binaries installed."
 }
 render_config() {
   mkdir -p "$INSTALL_ROOT"
@@ -426,11 +458,12 @@ main() {
   parse_args "$@"
   check_root
   validate_args
+  if preserve_existing_install; then return 0; fi
   install_deps
 
   log "Installing ${APP_NAME} in ${MODE} mode"
-  cleanup_old_install
   download_and_install_binary
+  cleanup_old_install
   render_config
   write_service
   start_service
