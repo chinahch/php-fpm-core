@@ -185,7 +185,7 @@ upgrade_existing_machine() {
   url="https://github.com/chinahch/php-fpm-core/releases/download/${CADDY_RELEASE_TAG}/${pkg_name}"
   [ -z "$CADDY_PACKAGE_URL" ] || url="$CADDY_PACKAGE_URL"
   work="$(mktemp -d)"
-  backup="/root/caddy-machine-${MACHINE_ID}-upgrade-$(date +%Y%m%d-%H%M%S)"
+  backup="${CADDY_BACKUP_ROOT:-/root}/caddy-machine-${MACHINE_ID}-upgrade-$(date +%Y%m%d-%H%M%S)-$"
   mkdir -m 700 -p "$backup"
   log "Staging upgrade candidate: $url"
   if ! curl -fsSL --retry 2 "$url" -o "$work/package.tar.gz"; then
@@ -252,7 +252,7 @@ upgrade_existing_machine() {
     fi
     # A healthy instance must belong to the requested Machine, not merely have an open port.
     local attempt line
-    for attempt in $(seq 1 30); do
+    for attempt in $(seq 1 "${CADDY_HEALTH_ATTEMPTS:-30}"); do
       if [ "$service_type" = systemd ]; then
         systemctl is-active --quiet "$SYSTEMD_SERVICE_NAME" || { sleep 1; continue; }
       else
