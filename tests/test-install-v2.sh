@@ -73,4 +73,58 @@ if ( download_and_install_binary ) >/dev/null 2>&1; then
   exit 1
 fi
 "$BINARY_PATH" -v | grep -Fq dual-ip-v2
+
+# Existing v1/dev Machine: same panel command upgrades safely without touching YAML/credentials.
+rm -f "$BINARY_PATH" "$CLI_PATH"
+mkdir -p "$tmp/service"
+SYSTEMD_SERVICE_PATH="$tmp/service/caddy.service"
+printf '[Service]\nExecStart=/fake/caddy\n' > "$SYSTEMD_SERVICE_PATH"
+cat > "$BINARY_PATH" <<'EOF'
+#!/bin/sh
+echo 'xboard-node dev (built unknown)'
+EOF
+cat > "$CLI_PATH" <<'EOF'
+#!/bin/sh
+echo 'old cli'
+EOF
+chmod +x "$BINARY_PATH" "$CLI_PATH"
+printf '%s\n' '#!/bin/sh' 'echo "xboard-node custom-0a29338-dual-ip-v2"' > "$tmp/candidate/caddy"
+cat > "$tmp/candidate/caddyctl" <<'EOF'
+#!/bin/sh
+if [ "${MOCK_FAIL_HEALTH:-0}" = 1 ]; then
+  echo "machine_id=19 unhealthy"
+else
+  echo "machine_id=19 active ok"
+fi
+EOF
+chmod +x "$tmp/candidate/"*
+tar -czf "$tmp/candidate.tar.gz" -C "$tmp/candidate" caddy caddyctl
+cp "$CONFIG_FILE" "$tmp/config-expected"
+cp "$CREDENTIALS_FILE" "$tmp/creds-expected"
+CADDY_BACKUP_ROOT="$tmp/backups"
+CADDY_HEALTH_ATTEMPTS=2
+mkdir -p "$CADDY_BACKUP_ROOT"
+systemctl() {
+  case "$1" in
+    is-active) return 0 ;;
+    stop|start) return 0 ;;
+    *) echo "unexpected systemctl: $*" >&2; return 1 ;;
+  esac
+}
+upgrade_existing_machine
+"$BINARY_PATH" -v | grep -Fq dual-ip-v2
+cmp "$CONFIG_FILE" "$tmp/config-expected"
+cmp "$CREDENTIALS_FILE" "$tmp/creds-expected"
+# A newer desired package that never becomes healthy must restore old binaries.
+printf '%s\n' '#!/bin/sh' 'echo "xboard-node dev (built unknown)"' > "$BINARY_PATH"
+printf '%s\n' '#!/bin/sh' 'echo "old cli"' > "$CLI_PATH"
+chmod +x "$BINARY_PATH" "$CLI_PATH"
+if ( MOCK_FAIL_HEALTH=1; upgrade_existing_machine ) >/dev/null 2>&1; then
+  echo "FAIL: failed health check did not reject upgrade" >&2
+  exit 1
+fi
+"$BINARY_PATH" -v | grep -Fq 'dev (built unknown)'
+cmp "$CONFIG_FILE" "$tmp/config-expected"
+cmp "$CREDENTIALS_FILE" "$tmp/creds-expected"
+
 echo 'PASS: repeat-install preservation, Machine ID checks, partial-install guard, candidate validation'
